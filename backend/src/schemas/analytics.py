@@ -45,6 +45,21 @@ class QueryInterpretation(BaseModel):
     explanation_ru: list[str] = Field(default_factory=list)
 
 
+
+
+class QueryVisualization(BaseModel):
+    recommended: bool = False
+    type: str = Field(default="table", description="Frontend view type: metric, table, bar, line, pie")
+    title: str | None = None
+    x_axis: str | None = None
+    y_axis: str | None = None
+    series: list[str] = Field(default_factory=list)
+    label_column: str | None = None
+    value_column: str | None = None
+    reason_ru: str | None = None
+    frontend_config: dict[str, Any] = Field(default_factory=dict)
+
+
 class AskResponse(BaseModel):
     question: str
     sql: str
@@ -53,6 +68,7 @@ class AskResponse(BaseModel):
     result: QueryResult
     guardrails: SqlValidationResponse
     interpretation: QueryInterpretation | None = None
+    visualization: QueryVisualization | None = None
     source: str = "llm"
     template_id: str | None = None
     template_title: str | None = None

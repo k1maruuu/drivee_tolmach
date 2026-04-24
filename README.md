@@ -376,3 +376,47 @@ The same interpretation is also returned by:
 - `POST /api/analytics/sql/execute`
 
 Use this block on frontend as a "Система поняла запрос так" panel.
+
+## Step 3: Visualization config для фронта
+
+Backend теперь возвращает блок `visualization`. Он не рисует график сам, а подсказывает frontend-у, какой компонент лучше показать: `metric`, `table`, `bar` или `line`.
+
+Пример ответа:
+
+```json
+{
+  "visualization": {
+    "recommended": true,
+    "type": "bar",
+    "title": "Покажи топ-10 городов по числу отмен",
+    "x_axis": "city_id",
+    "y_axis": "canceled_orders",
+    "series": ["canceled_orders"],
+    "label_column": null,
+    "value_column": null,
+    "reason_ru": "Есть категориальная колонка и числовой показатель — лучше показать столбчатую диаграмму.",
+    "frontend_config": {
+      "component": "BarChart",
+      "x_key": "city_id",
+      "y_keys": ["canceled_orders"],
+      "data_key": "rows"
+    }
+  }
+}
+```
+
+Где появляется `visualization`:
+
+- `POST /api/analytics/ask`
+- `POST /api/analytics/sql/execute`
+- `POST /api/templates/{template_id}/execute`
+- `POST /api/reports/{report_id}/execute`
+
+Логика выбора:
+
+- 1 строка + числовой показатель → `metric`
+- дата/день/неделя/месяц + число → `line`
+- город/статус/час + число → `bar`
+- если непонятно, что рисовать → `table`
+
+Frontend может брать `result.rows` как данные, а ключи брать из `visualization.frontend_config`.

@@ -2,7 +2,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from src.schemas.analytics import QueryInterpretation, QueryResult, SqlValidationResponse
+from src.schemas.analytics import QueryInterpretation, QueryResult, QueryVisualization, SqlValidationResponse
 
 
 class QueryTemplateRead(BaseModel):
@@ -29,3 +29,4 @@ class TemplateExecuteResponse(BaseModel):
     result: QueryResult
     guardrails: SqlValidationResponse
     interpretation: QueryInterpretation | None = None
+    visualization: QueryVisualization | None = None

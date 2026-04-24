@@ -21,6 +21,7 @@ from src.services.explainability import build_query_interpretation
 from src.services.history_service import build_result_preview, create_query_history
 from src.services.query_executor import execute_readonly_query
 from src.services.sql_guard import validate_sql_against_database
+from src.services.visualization import build_visualization_config
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -211,6 +212,12 @@ def execute_saved_report(
         source="saved_report",
         result=result,
     )
+    visualization = build_visualization_config(
+        question=report.question,
+        sql=validation.normalized_sql,
+        result=result,
+        interpretation=interpretation,
+    )
     report.last_result_preview = build_result_preview(result)
     report.last_row_count = result.get("row_count")
     report.last_run_at = datetime.now(timezone.utc)
@@ -237,6 +244,7 @@ def execute_saved_report(
         result=result,
         guardrails=_validation_response(validation),
         interpretation=interpretation,
+        visualization=visualization,
     )
 
 

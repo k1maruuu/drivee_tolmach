@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from src.schemas.analytics import QueryInterpretation, QueryResult, SqlValidationResponse
+from src.schemas.analytics import QueryInterpretation, QueryResult, QueryVisualization, SqlValidationResponse
 
 
 class QueryHistoryRead(BaseModel):
@@ -71,3 +71,4 @@ class ReportExecuteResponse(BaseModel):
     result: QueryResult
     guardrails: SqlValidationResponse
     interpretation: QueryInterpretation | None = None
+    visualization: QueryVisualization | None = None

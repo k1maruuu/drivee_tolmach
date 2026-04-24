@@ -17,6 +17,7 @@ from src.services.query_executor import execute_readonly_query
 from src.services.redis_cache import get_json, set_json
 from src.services.sql_guard import validate_sql_against_database
 from src.services.template_service import find_matching_template, result_cache_key
+from src.services.visualization import build_visualization_config
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -84,6 +85,12 @@ def _execute_matched_template(
                 source="template_cache",
                 result=cached_result,
             )
+            visualization = cached.get("visualization") or build_visualization_config(
+                question=question,
+                sql=cached_sql,
+                result=cached_result,
+                interpretation=interpretation,
+            )
             create_query_history(
                 db,
                 current_user=current_user,
@@ -104,6 +111,7 @@ def _execute_matched_template(
                 result=cached_result,
                 guardrails=cached_guardrails,
                 interpretation=interpretation,
+                visualization=visualization,
                 source="template",
                 template_id=str(template.get("id")),
                 template_title=str(template.get("title")),
@@ -150,6 +158,12 @@ def _execute_matched_template(
         source="template",
         result=result,
     )
+    visualization = build_visualization_config(
+        question=question,
+        sql=validation.normalized_sql,
+        result=result,
+        interpretation=interpretation,
+    )
     execution_time_ms = now_ms(started_at)
 
     response_payload = {
@@ -161,6 +175,7 @@ def _execute_matched_template(
         "result": result,
         "guardrails": guardrails,
         "interpretation": interpretation,
+        "visualization": visualization,
     }
     set_json(cache_key, response_payload, settings.template_result_cache_ttl_seconds)
 
@@ -194,6 +209,7 @@ def _execute_matched_template(
         result=result,
         guardrails=guardrails,
         interpretation=interpretation,
+        visualization=visualization,
         source="template",
         template_id=str(template.get("id")),
         template_title=str(template.get("title")),
@@ -265,6 +281,12 @@ def execute_sql_endpoint(
         source="manual_sql",
         result=result,
     )
+    visualization = build_visualization_config(
+        question="Manual SQL execution",
+        sql=validation.normalized_sql,
+        result=result,
+        interpretation=interpretation,
+    )
     create_query_history(
         db,
         current_user=current_user,
@@ -278,6 +300,7 @@ def execute_sql_endpoint(
         "sql": validation.normalized_sql,
         "guardrails": _validation_response(validation),
         "interpretation": interpretation,
+        "visualization": visualization,
         "result": result,
     }
 
@@ -351,6 +374,12 @@ async def ask(
         source="llm",
         result=result,
     )
+    visualization = build_visualization_config(
+        question=data.question,
+        sql=validation.normalized_sql,
+        result=result,
+        interpretation=interpretation,
+    )
     execution_time_ms = now_ms(started_at)
 
     log = QueryLog(
@@ -381,6 +410,7 @@ async def ask(
         result=result,
         guardrails=_validation_response(validation),
         interpretation=interpretation,
+        visualization=visualization,
         source="llm",
         cache_hit=False,
     )

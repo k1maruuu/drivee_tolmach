@@ -15,6 +15,7 @@ from src.services.query_executor import execute_readonly_query
 from src.services.redis_cache import get_json, set_json
 from src.services.sql_guard import validate_sql_against_database
 from src.services.template_service import get_template, load_templates, result_cache_key
+from src.services.visualization import build_visualization_config
 
 router = APIRouter(prefix="/templates", tags=["query templates"])
 
@@ -88,6 +89,13 @@ def execute_query_template(
                 source="template_cache",
                 result=cached.get("result"),
             )
+        if not cached.get("visualization") and cached.get("result"):
+            cached["visualization"] = build_visualization_config(
+                question=str(template["question"]),
+                sql=cached_sql,
+                result=cached.get("result"),
+                interpretation=cached.get("interpretation"),
+            )
         create_query_history(
             db,
             current_user=current_user,
@@ -129,6 +137,12 @@ def execute_query_template(
         source="template",
         result=result,
     )
+    visualization = build_visualization_config(
+        question=str(template["question"]),
+        sql=validation.normalized_sql,
+        result=result,
+        interpretation=interpretation,
+    )
 
     response = {
         "template_id": template_id,
@@ -139,6 +153,7 @@ def execute_query_template(
         "result": result,
         "guardrails": _validation_response(validation),
         "interpretation": interpretation,
+        "visualization": visualization,
     }
     set_json(cache_key, response, settings.template_result_cache_ttl_seconds)
     create_query_history(
