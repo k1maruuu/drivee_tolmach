@@ -296,6 +296,16 @@ def schema(current_user: User = Depends(get_current_user)):
         "column_descriptions": TRAIN_COLUMN_DESCRIPTIONS,
         "notes_md": read_train_notes(),
         "dataset_loading": "train.csv is imported into PostgreSQL table train on startup when IMPORT_TRAIN_ON_STARTUP=true. Ollama receives only schema + notes.md, not the whole CSV.",
+        "performance_guardrails": {
+            "sql_default_limit": settings.sql_default_limit,
+            "sql_max_limit": settings.sql_max_limit,
+            "sql_statement_timeout_ms": settings.sql_statement_timeout_ms,
+            "sql_max_offset": settings.sql_max_offset,
+            "sql_max_train_references": settings.sql_max_train_references,
+            "sql_block_select_star": settings.sql_block_select_star,
+            "sql_block_cross_join": settings.sql_block_cross_join,
+            "sql_readonly_transaction": settings.sql_readonly_transaction,
+        },
         "semantic_notes": {
             "orders": "COUNT(DISTINCT order_id) for business order count; raw rows are order_id + tender_id combinations",
             "order_identifier": "order_id",

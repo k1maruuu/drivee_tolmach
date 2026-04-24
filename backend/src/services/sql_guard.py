@@ -1,3 +1,4 @@
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -28,6 +29,20 @@ FORBIDDEN_KEYWORDS = {
     "MERGE",
     "SET",
     "RESET",
+    "LOCK",
+    "LISTEN",
+    "NOTIFY",
+}
+
+DANGEROUS_FUNCTIONS = {
+    "pg_sleep",
+    "generate_series",
+    "dblink",
+    "lo_import",
+    "lo_export",
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
 }
 
 ALLOWED_TABLES = {"train"}
@@ -83,10 +98,8 @@ def _strip_sql_comments(sql: str) -> str:
 def _strip_sql_literals_and_comments(sql: str) -> str:
     """Remove comments and literal values before keyword guardrails.
 
-    Important: values like status_order = 'delete' are safe and valid for this
-    dataset. We must not treat the word DELETE inside a quoted string as a DML
-    command. Real DML statements are still blocked by the first keyword check
-    and by scanning SQL after literals are removed.
+    Values like status_order = 'delete' are safe for this dataset. We must not
+    treat the word DELETE inside a quoted string as a DML command.
     """
     cleaned = _strip_sql_comments(sql)
 
@@ -95,8 +108,6 @@ def _strip_sql_literals_and_comments(sql: str) -> str:
     cleaned = re.sub(r"\$\$.*?\$\$", "''", cleaned, flags=re.DOTALL)
 
     # Standard strings and PostgreSQL escape strings: '...', E'...'.
-    # Do NOT require a word boundary before the opening quote: quotes are not
-    # word characters, so r\b before ' does not match after spaces/operators.
     cleaned = re.sub(r"(?:\bE)?'(?:''|[^'])*'", "''", cleaned, flags=re.IGNORECASE)
 
     # Quoted identifiers should not trigger keyword guardrails either.
@@ -104,15 +115,8 @@ def _strip_sql_literals_and_comments(sql: str) -> str:
     return cleaned
 
 
-
-
 def _mask_extract_from_clauses(sql: str) -> str:
-    """Mask EXTRACT(... FROM ...) expressions before table extraction.
-
-    A simple FROM/JOIN regex can otherwise treat the FROM inside
-    EXTRACT(HOUR FROM order_timestamp) as a real table reference and falsely
-    block safe analytical templates.
-    """
+    """Mask EXTRACT(... FROM ...) expressions before table extraction."""
     result: list[str] = []
     i = 0
     lower = sql.lower()
@@ -148,18 +152,15 @@ def _mask_extract_from_clauses(sql: str) -> str:
         i += 1
     return "".join(result)
 
-def _extract_tables(sql: str) -> set[str]:
-    """
-    Extract real table names from FROM/JOIN clauses.
 
-    This intentionally ignores derived tables like:
-    FROM (SELECT ... FROM train) t
+def _extract_table_references(sql: str) -> list[str]:
+    """Extract real table names from FROM/JOIN clauses.
 
-    The inner FROM train is still extracted by the regex, while the outer
-    FROM (...) alias is not treated as a table.
+    Derived tables like FROM (SELECT ...) are ignored here, while the inner real
+    FROM train remains visible to the regex.
     """
     cleaned = _mask_extract_from_clauses(_strip_sql_comments(sql))
-    tables: set[str] = set()
+    tables: list[str] = []
     for match in re.finditer(
         r"\b(?:FROM|JOIN)\s+(?!\()([a-zA-Z_][a-zA-Z0-9_\.]*)(?:\s+AS)?(?:\s+[a-zA-Z_][a-zA-Z0-9_]*)?",
         cleaned,
@@ -167,12 +168,29 @@ def _extract_tables(sql: str) -> set[str]:
     ):
         table = match.group(1).split(".")[-1].strip('"').lower()
         if table:
-            tables.add(table)
+            tables.append(table)
     return tables
+
+
+def _extract_tables(sql: str) -> set[str]:
+    return set(_extract_table_references(sql))
 
 
 def _has_limit(sql: str) -> bool:
     return bool(re.search(r"\bLIMIT\b", sql, flags=re.IGNORECASE))
+
+
+def _limit_warning(sql: str, limit: int) -> str | None:
+    cleaned = sql.strip().rstrip(";")
+    match = re.search(r"\bLIMIT\s+(\d+)\s*$", cleaned, flags=re.IGNORECASE)
+    if match:
+        current_limit = int(match.group(1))
+        if current_limit > limit:
+            return f"LIMIT was reduced from {current_limit} to {limit}."
+        return None
+    if _has_limit(cleaned):
+        return f"Unsupported LIMIT form was wrapped and limited to {limit} rows."
+    return f"LIMIT {limit} was added automatically."
 
 
 def _enforce_limit(sql: str, limit: int) -> str:
@@ -197,11 +215,77 @@ def _safe_error(exc: Exception) -> str:
     return message[:700]
 
 
+def _safe_limit(limit: int | None = None) -> int:
+    return min(limit or settings.sql_default_limit, settings.sql_max_limit)
+
+
 def normalize_sql(sql: str, limit: int | None = None) -> str:
-    safe_limit = min(limit or settings.sql_default_limit, settings.sql_max_limit)
     cleaned = sql.strip().rstrip(";")
     cleaned = re.sub(r"\s+", " ", cleaned)
-    return _enforce_limit(cleaned, safe_limit)
+    return _enforce_limit(cleaned, _safe_limit(limit))
+
+
+def _extract_offset(sql: str) -> int | None:
+    match = re.search(r"\bOFFSET\s+(\d+)\b", sql, flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _plan_from_explain_row(raw_value: Any) -> dict[str, Any] | None:
+    """Parse EXPLAIN (FORMAT JSON) result from psycopg2/SQLAlchemy."""
+    value = raw_value
+    if isinstance(value, str):
+        value = json.loads(value)
+    if isinstance(value, list) and value:
+        first = value[0]
+        if isinstance(first, dict):
+            return first.get("Plan") or first
+    if isinstance(value, dict):
+        return value.get("Plan") or value
+    return None
+
+
+def _max_plan_metric(plan: dict[str, Any], key: str) -> float:
+    current = float(plan.get(key) or 0)
+    children = plan.get("Plans") or []
+    for child in children:
+        if isinstance(child, dict):
+            current = max(current, _max_plan_metric(child, key))
+    return current
+
+
+def _apply_readonly_settings(db: Session) -> None:
+    timeout_ms = int(settings.sql_statement_timeout_ms)
+    db.execute(text(f"SET LOCAL statement_timeout = {timeout_ms}"))
+    db.execute(text(f"SET LOCAL idle_in_transaction_session_timeout = {timeout_ms}"))
+    if settings.sql_readonly_transaction:
+        db.execute(text("SET LOCAL default_transaction_read_only = on"))
+
+
+def _validate_explain_plan(db: Session, sql: str, params: dict[str, Any] | None = None) -> list[str]:
+    """Run PostgreSQL planner checks without fetching data."""
+    warnings: list[str] = []
+    raw_plan = db.execute(text("EXPLAIN (FORMAT JSON) " + sql), params or {}).scalar()
+    plan = _plan_from_explain_row(raw_plan)
+    if not plan:
+        warnings.append("PostgreSQL EXPLAIN passed, but plan metrics could not be parsed.")
+        return warnings
+
+    total_cost = _max_plan_metric(plan, "Total Cost")
+    plan_rows = _max_plan_metric(plan, "Plan Rows")
+
+    if total_cost > settings.sql_max_explain_total_cost:
+        raise ValueError(
+            f"Query is too expensive by EXPLAIN: total_cost={total_cost:.2f}, "
+            f"limit={settings.sql_max_explain_total_cost}."
+        )
+    if plan_rows > settings.sql_max_explain_plan_rows:
+        raise ValueError(
+            f"Query may scan/produce too many rows by EXPLAIN: plan_rows={int(plan_rows)}, "
+            f"limit={settings.sql_max_explain_plan_rows}."
+        )
+
+    warnings.append(f"EXPLAIN estimate: total_cost={total_cost:.2f}, plan_rows={int(plan_rows)}.")
+    return warnings
 
 
 def validate_sql(sql: str, limit: int | None = None) -> ValidationResult:
@@ -209,6 +293,7 @@ def validate_sql(sql: str, limit: int | None = None) -> ValidationResult:
     original_sql = sql.strip()
     errors: list[str] = []
     warnings: list[str] = []
+    safe_limit = _safe_limit(limit)
 
     if not original_sql:
         return ValidationResult(False, sql, errors=["SQL is empty"])
@@ -234,13 +319,41 @@ def validate_sql(sql: str, limit: int | None = None) -> ValidationResult:
         if re.search(rf"\b{keyword}\b", scan_sql):
             errors.append(f"Forbidden keyword: {keyword}")
 
+    for function_name in DANGEROUS_FUNCTIONS:
+        if re.search(rf"\b{function_name}\s*\(", scan_sql, flags=re.IGNORECASE):
+            errors.append(f"Forbidden function: {function_name}")
+
     if re.search(r";\s*\S", original_sql):
         errors.append("Multiple statements are forbidden")
 
     if re.search(r"\bSELECT\s+\*", scan_sql):
-        warnings.append("SELECT * is not recommended; explicit columns are safer")
+        message = "SELECT * is forbidden; use explicit columns to control payload size."
+        if settings.sql_block_select_star:
+            errors.append(message)
+        else:
+            warnings.append(message)
 
-    tables = _extract_tables(original_sql)
+    if settings.sql_block_cross_join and re.search(r"\bCROSS\s+JOIN\b", scan_sql):
+        errors.append("CROSS JOIN is forbidden because it can produce extremely large result sets.")
+
+    if re.search(r"\bORDER\s+BY\s+RANDOM\s*\(", scan_sql):
+        errors.append("ORDER BY random() is forbidden because it is expensive on large tables.")
+
+    if re.search(r"\bFOR\s+(UPDATE|SHARE|NO\s+KEY\s+UPDATE|KEY\s+SHARE)\b", scan_sql):
+        errors.append("Row-locking clauses are forbidden in read-only analytics queries.")
+
+    offset_value = _extract_offset(scan_sql)
+    if offset_value is not None and offset_value > settings.sql_max_offset:
+        errors.append(f"OFFSET {offset_value} is too large. Maximum allowed OFFSET is {settings.sql_max_offset}.")
+    elif re.search(r"\bOFFSET\s+(?!\d+\b)", scan_sql):
+        errors.append("Parameterized or non-numeric OFFSET is forbidden.")
+
+    # Detect implicit comma joins with train, e.g. FROM train a, train b.
+    if re.search(r"\bFROM\s+train(?:\s+[a-zA-Z_][a-zA-Z0-9_]*)?\s*,", scan_sql, flags=re.IGNORECASE):
+        errors.append("Comma joins are forbidden. Use simple aggregation from train only.")
+
+    table_refs = _extract_table_references(original_sql)
+    tables = set(table_refs)
     cte_names = _extract_cte_names(original_sql)
     unknown_tables = tables - ALLOWED_TABLES - cte_names
     if unknown_tables:
@@ -249,9 +362,18 @@ def validate_sql(sql: str, limit: int | None = None) -> ValidationResult:
     if "train" not in tables:
         errors.append("Query must read from table train")
 
+    if table_refs.count("train") > settings.sql_max_train_references:
+        errors.append(
+            f"Query references train {table_refs.count('train')} times; maximum allowed is "
+            f"{settings.sql_max_train_references}. Self-joins are too heavy for MVP mode."
+        )
+
     normalized = None
     if not errors:
-        normalized = normalize_sql(original_sql, limit=limit)
+        warning = _limit_warning(original_sql, safe_limit)
+        if warning:
+            warnings.append(warning)
+        normalized = normalize_sql(original_sql, limit=safe_limit)
 
     return ValidationResult(
         is_valid=not errors,
@@ -271,9 +393,9 @@ def validate_sql_against_database(
     """
     Full validation for MVP guardrails.
 
-    1. Static guardrails block dangerous statements.
-    2. PostgreSQL EXPLAIN checks real executability: columns, functions, casts,
-       aliases, GROUP BY correctness, bind parameters, etc.
+    1. Static guardrails block dangerous statements and heavy patterns.
+    2. PostgreSQL EXPLAIN checks executability: columns, functions, casts,
+       aliases, GROUP BY correctness, bind parameters, and rough plan cost.
     3. No data is changed and no rows are fetched at validation stage.
     """
     validation = validate_sql(sql, limit=limit)
@@ -281,13 +403,13 @@ def validate_sql_against_database(
         return validation
 
     try:
-        db.execute(text(f"SET LOCAL statement_timeout = {int(settings.sql_statement_timeout_ms)}"))
-        db.execute(text("EXPLAIN " + validation.normalized_sql), params or {})
+        _apply_readonly_settings(db)
+        validation.warnings.extend(_validate_explain_plan(db, validation.normalized_sql, params or {}))
         db.rollback()
     except Exception as exc:
         db.rollback()
         validation.is_valid = False
-        validation.errors.append(f"SQL cannot be executed by PostgreSQL: {_safe_error(exc)}")
+        validation.errors.append(f"SQL cannot be executed safely by PostgreSQL: {_safe_error(exc)}")
         validation.normalized_sql = None
 
     return validation
