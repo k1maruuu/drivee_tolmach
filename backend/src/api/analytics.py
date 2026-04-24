@@ -9,6 +9,8 @@ from src.db.session import get_db
 from src.models.query_log import QueryLog
 from src.models.user import User
 from src.schemas.analytics import AskRequest, AskResponse, SqlRequest, SqlValidationResponse
+from src.services.clarification import analyze_question_for_clarification
+from src.services.confidence import build_confidence
 from src.services.dataset_loader import TRAIN_COLUMNS, TRAIN_COLUMN_DESCRIPTIONS, read_train_notes
 from src.services.explainability import build_query_interpretation
 from src.services.history_service import create_query_history, now_ms
@@ -21,6 +23,9 @@ from src.services.template_service import find_matching_template, result_cache_k
 from src.services.visualization import build_visualization_config
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
+
+
+EMPTY_RESULT = {"columns": [], "rows": [], "row_count": 0}
 
 
 def _validation_response(validation) -> SqlValidationResponse:
@@ -46,6 +51,15 @@ def _validation_feedback(validation) -> str:
 def _missing_template_params(template: dict, provided_params: dict) -> list[str]:
     required_params = set(template.get("params", []))
     return sorted(required_params - set(provided_params))
+
+
+def _template_confidence(template: dict, *, cache_hit: bool = False):
+    return build_confidence(
+        source="template_cache" if cache_hit else "template",
+        template_match_score=(template.get("match") or {}).get("score"),
+        validation_is_valid=True,
+        cache_hit=cache_hit,
+    )
 
 
 def _execute_matched_template(
@@ -92,6 +106,7 @@ def _execute_matched_template(
                 result=cached_result,
                 interpretation=interpretation,
             )
+            confidence = _template_confidence(template, cache_hit=True)
             create_query_history(
                 db,
                 current_user=current_user,
@@ -101,13 +116,14 @@ def _execute_matched_template(
                 template_id=str(template.get("id")),
                 template_title=str(template.get("title")),
                 result=cached_result,
-                confidence=1.0,
+                confidence=confidence.value,
                 execution_time_ms=now_ms(started_at),
             )
             return AskResponse(
                 question=question,
                 sql=cached_sql,
-                confidence=1.0,
+                confidence=confidence.value,
+                confidence_reason=confidence.reason,
                 notes="Найден и выполнен готовый шаблон. ИИ/Ollama не вызывалась. Результат взят из Redis cache.",
                 result=cached_result,
                 guardrails=cached_guardrails,
@@ -129,7 +145,7 @@ def _execute_matched_template(
             generated_sql=sql,
             status="template_blocked",
             error_message=error_message,
-            confidence=1.0,
+            confidence=0.0,
         )
         db.add(log)
         db.commit()
@@ -143,7 +159,7 @@ def _execute_matched_template(
             template_title=str(template.get("title")),
             status="blocked",
             error_message=error_message,
-            confidence=1.0,
+            confidence=0.0,
             execution_time_ms=now_ms(started_at),
         )
         raise HTTPException(
@@ -165,6 +181,7 @@ def _execute_matched_template(
         result=result,
         interpretation=interpretation,
     )
+    confidence = _template_confidence(template, cache_hit=False)
     execution_time_ms = now_ms(started_at)
 
     response_payload = {
@@ -177,6 +194,8 @@ def _execute_matched_template(
         "guardrails": guardrails,
         "interpretation": interpretation,
         "visualization": visualization,
+        "confidence": confidence.value,
+        "confidence_reason": confidence.reason,
     }
     set_json(cache_key, response_payload, settings.template_result_cache_ttl_seconds)
 
@@ -185,7 +204,7 @@ def _execute_matched_template(
         question=question,
         generated_sql=validation.normalized_sql,
         status="template_ok",
-        confidence=1.0,
+        confidence=confidence.value,
     )
     db.add(log)
     db.commit()
@@ -198,14 +217,15 @@ def _execute_matched_template(
         template_id=str(template.get("id")),
         template_title=str(template.get("title")),
         result=result,
-        confidence=1.0,
+        confidence=confidence.value,
         execution_time_ms=execution_time_ms,
     )
 
     return AskResponse(
         question=question,
         sql=validation.normalized_sql,
-        confidence=1.0,
+        confidence=confidence.value,
+        confidence_reason=confidence.reason,
         notes="Найден и выполнен готовый шаблон. ИИ/Ollama не вызывалась.",
         result=result,
         guardrails=guardrails,
@@ -288,6 +308,12 @@ def execute_sql_endpoint(
         result=result,
         interpretation=interpretation,
     )
+    confidence = build_confidence(
+        source="manual_sql",
+        validation_is_valid=True,
+        has_warnings=bool(validation.warnings),
+        row_count=result.get("row_count"),
+    )
     create_query_history(
         db,
         current_user=current_user,
@@ -295,10 +321,13 @@ def execute_sql_endpoint(
         generated_sql=validation.normalized_sql,
         source="manual_sql",
         result=result,
+        confidence=confidence.value,
         execution_time_ms=now_ms(started_at),
     )
     return {
         "sql": validation.normalized_sql,
+        "confidence": confidence.value,
+        "confidence_reason": confidence.reason,
         "guardrails": _validation_response(validation),
         "interpretation": interpretation,
         "visualization": visualization,
@@ -337,15 +366,66 @@ async def ask(
             )
         # If a parameterized template matched but the user did not provide a
         # concrete period and we could not infer one, do not return 400 from
-        # /analytics/ask. Fallback to Ollama instead.
+        # /analytics/ask. Fallback to ambiguity check / Ollama instead.
 
-    # 2) Fallback to Ollama only when there is no suitable template.
+    # 2) If there is no safe template and the question is clearly ambiguous,
+    # ask for clarification instead of letting the LLM guess a business metric.
+    clarification = analyze_question_for_clarification(data.question)
+    if clarification.needs_clarification:
+        confidence = build_confidence(source="clarification")
+        QueryLogEntry = QueryLog(
+            user_id=current_user.id,
+            question=data.question,
+            generated_sql="",
+            status="needs_clarification",
+            error_message=clarification.reason,
+            confidence=confidence.value,
+        )
+        db.add(QueryLogEntry)
+        db.commit()
+        create_query_history(
+            db,
+            current_user=current_user,
+            question=data.question,
+            generated_sql="",
+            source="clarification",
+            status="needs_clarification",
+            error_message=clarification.reason,
+            confidence=confidence.value,
+            execution_time_ms=now_ms(started_at),
+        )
+        return AskResponse(
+            question=data.question,
+            sql="",
+            confidence=confidence.value,
+            confidence_reason=confidence.reason,
+            notes="Запрос неоднозначный. Backend не вызвал Ollama и не стал угадывать SQL.",
+            result=EMPTY_RESULT,
+            guardrails=SqlValidationResponse(
+                is_valid=False,
+                sql="",
+                normalized_sql=None,
+                errors=["needs_clarification"],
+                warnings=[],
+            ),
+            interpretation=None,
+            visualization=None,
+            needs_clarification=True,
+            clarification=clarification.to_payload(),
+            source="clarification",
+            cache_hit=False,
+        )
+
+    # 3) Fallback to Ollama only when there is no suitable template and no
+    # obvious ambiguity.
     generated = await generate_sql(data.question, max_rows=max_rows)
     raw_sql = str(generated["sql"])
     validation = validate_sql_against_database(db, raw_sql, limit=max_rows)
+    repaired = False
 
     # One automatic repair attempt: useful when the model invents columns like id.
     if not validation.is_valid:
+        repaired = True
         feedback = _validation_feedback(validation)
         generated = await generate_sql(data.question, max_rows=max_rows, validation_feedback=feedback)
         raw_sql = str(generated["sql"])
@@ -353,13 +433,20 @@ async def ask(
 
     if not validation.is_valid or not validation.normalized_sql:
         error_message = "; ".join(validation.errors)
+        confidence = build_confidence(
+            source="llm",
+            llm_confidence=generated.get("confidence"),
+            validation_is_valid=False,
+            has_warnings=bool(validation.warnings),
+            repaired=repaired,
+        )
         log = QueryLog(
             user_id=current_user.id,
             question=data.question,
             generated_sql=raw_sql,
             status="blocked",
             error_message=error_message,
-            confidence=generated.get("confidence"),
+            confidence=confidence.value,
         )
         db.add(log)
         db.commit()
@@ -371,12 +458,12 @@ async def ask(
             source="llm",
             status="blocked",
             error_message=error_message,
-            confidence=generated.get("confidence"),
+            confidence=confidence.value,
             execution_time_ms=now_ms(started_at),
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"errors": validation.errors, "sql": raw_sql},
+            detail={"errors": validation.errors, "sql": raw_sql, "confidence": confidence.value, "confidence_reason": confidence.reason},
         )
 
     result = execute_readonly_query(db, validation.normalized_sql)
@@ -392,6 +479,14 @@ async def ask(
         result=result,
         interpretation=interpretation,
     )
+    confidence = build_confidence(
+        source="llm",
+        llm_confidence=generated.get("confidence"),
+        validation_is_valid=True,
+        has_warnings=bool(validation.warnings),
+        row_count=result.get("row_count"),
+        repaired=repaired,
+    )
     execution_time_ms = now_ms(started_at)
 
     log = QueryLog(
@@ -399,7 +494,7 @@ async def ask(
         question=data.question,
         generated_sql=validation.normalized_sql,
         status="ok",
-        confidence=generated.get("confidence"),
+        confidence=confidence.value,
     )
     db.add(log)
     db.commit()
@@ -410,14 +505,15 @@ async def ask(
         generated_sql=validation.normalized_sql,
         source="llm",
         result=result,
-        confidence=generated.get("confidence"),
+        confidence=confidence.value,
         execution_time_ms=execution_time_ms,
     )
 
     return AskResponse(
         question=data.question,
         sql=validation.normalized_sql,
-        confidence=generated.get("confidence"),
+        confidence=confidence.value,
+        confidence_reason=confidence.reason,
         notes=generated.get("notes"),
         result=result,
         guardrails=_validation_response(validation),

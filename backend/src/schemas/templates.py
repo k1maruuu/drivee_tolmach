@@ -26,6 +26,8 @@ class TemplateExecuteResponse(BaseModel):
     sql: str
     params: dict[str, Any]
     cache_hit: bool
+    confidence: float | None = None
+    confidence_reason: str | None = None
     result: QueryResult
     guardrails: SqlValidationResponse
     interpretation: QueryInterpretation | None = None

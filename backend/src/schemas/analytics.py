@@ -45,6 +45,16 @@ class QueryInterpretation(BaseModel):
     explanation_ru: list[str] = Field(default_factory=list)
 
 
+class ClarificationOption(BaseModel):
+    label: str
+    question: str
+    template_params: dict[str, Any] = Field(default_factory=dict)
+
+
+class ClarificationPayload(BaseModel):
+    message_ru: str
+    reason: str | None = None
+    options: list[ClarificationOption] = Field(default_factory=list)
 
 
 class QueryVisualization(BaseModel):
@@ -64,11 +74,14 @@ class AskResponse(BaseModel):
     question: str
     sql: str
     confidence: float | None = None
+    confidence_reason: str | None = None
     notes: str | None = None
     result: QueryResult
     guardrails: SqlValidationResponse
     interpretation: QueryInterpretation | None = None
     visualization: QueryVisualization | None = None
+    needs_clarification: bool = False
+    clarification: ClarificationPayload | None = None
     source: str = "llm"
     template_id: str | None = None
     template_title: str | None = None
