@@ -1,6 +1,7 @@
 import hashlib
 import re
 from dataclasses import asdict, dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,7 @@ from src.core.config import settings
 from src.services.redis_cache import get_json, set_json
 
 TEMPLATES_CACHE_KEY = "drivee:templates:v1:list"
+TEMPLATE_MATCH_CACHE_PREFIX = "drivee:template_match:v1:"
 
 
 @dataclass(frozen=True)
@@ -144,3 +146,124 @@ def result_cache_key(template_id: str, sql: str, params: dict[str, Any], max_row
     payload = f"{template_id}|{sql}|{params}|{max_rows}"
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return f"drivee:template_result:v1:{digest}"
+
+
+def _normalize_question(text: str) -> str:
+    """Normalize a user question for deterministic template lookup.
+
+    This is intentionally strict. It should catch exact/safe reusable prompts,
+    but it should not aggressively guess, because a false match is worse than
+    sending the question to LLM.
+    """
+    normalized = text.lower().replace("ё", "е")
+    normalized = re.sub(r"[«»\"'`.,!?;:()\[\]{}<>/\\|+*=#№%$@^&~\-]+", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
+    # UI/user filler words. Removing them lets templates match phrases like
+    # "покажи мне топ 10..." and "топ 10..." without using the LLM.
+    stop_words = {
+        "мне",
+        "пожалуйста",
+        "плиз",
+        "давай",
+        "выведи",
+        "вывести",
+        "покажи",
+        "показать",
+        "напиши",
+        "дай",
+        "получи",
+        "получить",
+        "сделай",
+        "отобрази",
+    }
+    tokens = [token for token in normalized.split() if token not in stop_words]
+    return " ".join(tokens)
+
+
+def _token_set_score(left: str, right: str) -> float:
+    left_tokens = set(left.split())
+    right_tokens = set(right.split())
+    if not left_tokens or not right_tokens:
+        return 0.0
+
+    intersection = left_tokens & right_tokens
+    precision = len(intersection) / len(left_tokens)
+    recall = len(intersection) / len(right_tokens)
+    if precision + recall == 0:
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
+
+
+def _template_match_cache_key(question: str) -> str:
+    digest = hashlib.sha256(_normalize_question(question).encode("utf-8")).hexdigest()
+    return f"{TEMPLATE_MATCH_CACHE_PREFIX}{digest}"
+
+
+def find_matching_template(question: str) -> dict[str, Any] | None:
+    """Return a ready SQL template before calling Ollama.
+
+    Matching order:
+    1. exact normalized question match;
+    2. conservative fuzzy match.
+
+    The function uses Redis cache for the match decision, but the actual SQL
+    template is always loaded from the templates list, so frontend buttons and
+    /analytics/ask use the same source of truth.
+    """
+    query_norm = _normalize_question(question)
+    if not query_norm:
+        return None
+
+    cache_key = _template_match_cache_key(question)
+    cached = get_json(cache_key)
+    if isinstance(cached, dict):
+        template_id = cached.get("template_id")
+        template = get_template(str(template_id)) if template_id else None
+        if template:
+            template["match"] = cached
+            return template
+        if cached.get("template_id") is None:
+            return None
+
+    templates = load_templates()
+    best_template: dict[str, Any] | None = None
+    best_score = 0.0
+    best_type = "none"
+
+    for template in templates:
+        template_norm = _normalize_question(str(template.get("question", "")))
+        if not template_norm:
+            continue
+
+        if query_norm == template_norm:
+            best_template = template
+            best_score = 1.0
+            best_type = "exact"
+            break
+
+        sequence_score = SequenceMatcher(None, query_norm, template_norm).ratio()
+        token_score = _token_set_score(query_norm, template_norm)
+        score = max(sequence_score, token_score)
+
+        if score > best_score:
+            best_score = score
+            best_template = template
+            best_type = "fuzzy"
+
+    threshold = getattr(settings, "template_match_threshold", 0.88)
+    if not best_template or best_score < threshold:
+        set_json(cache_key, {"template_id": None, "score": best_score, "match_type": "none"}, 600)
+        return None
+
+    match_info = {
+        "template_id": best_template["id"],
+        "score": round(best_score, 4),
+        "match_type": best_type,
+        "matched_question": best_template["question"],
+    }
+    set_json(cache_key, match_info, settings.templates_cache_ttl_seconds)
+
+    result = dict(best_template)
+    result["match"] = match_info
+    return result

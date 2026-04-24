@@ -39,6 +39,7 @@ class Settings(BaseSettings):
 
     templates_cache_ttl_seconds: int = 60 * 60 * 24
     template_result_cache_ttl_seconds: int = 60 * 10
+    template_match_threshold: float = 0.88
 
     @property
     def cors_origins(self) -> List[str]:
