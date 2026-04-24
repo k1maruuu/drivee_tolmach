@@ -13,7 +13,7 @@ EXAMPLES = """
 Ответ SQL: SELECT COUNT(DISTINCT order_id) AS orders_count FROM train WHERE order_timestamp >= TIMESTAMP '2026-01-01' AND order_timestamp < TIMESTAMP '2026-02-01';
 
 Пользователь: Покажи поездки и отмены по городам за вчера
-Ответ SQL: SELECT city_id, COUNT(DISTINCT order_id) FILTER (WHERE status_order = 'done') AS done_orders, COUNT(DISTINCT order_id) FILTER (WHERE status_order <> 'done') AS cancelled_orders FROM train WHERE order_timestamp >= CURRENT_DATE - INTERVAL '1 day' AND order_timestamp < CURRENT_DATE GROUP BY city_id ORDER BY done_orders DESC LIMIT 100;
+Ответ SQL: SELECT city_id, COUNT(DISTINCT order_id) FILTER (WHERE status_order = 'done') AS done_orders, COUNT(DISTINCT order_id) FILTER (WHERE status_order = 'cancel') AS cancelled_orders FROM train WHERE order_timestamp >= CURRENT_DATE - INTERVAL '1 day' AND order_timestamp < CURRENT_DATE GROUP BY city_id ORDER BY done_orders DESC LIMIT 100;
 """.strip()
 
 
@@ -49,6 +49,7 @@ JSON формат: {{"sql":"...", "confidence":0.0, "notes":"..."}}
 11. Если нужен год, используй полуинтервал: >= TIMESTAMP 'YYYY-01-01' AND < TIMESTAMP 'YYYY+1-01-01'.
 12. Если считаешь количество заказов, обычно используй COUNT(DISTINCT order_id), потому что одна строка — это комбинация order_id и tender_id.
 13. Если вопрос неоднозначный, выбери самое безопасное толкование и напиши это в notes.
+14. Ты не видишь строки train.csv и не должен придумывать данные. Ты генерируешь только SQL по схеме и notes.md, а backend выполнит SQL в PostgreSQL.
 
 Фактическая схема таблицы train:
 {get_train_schema_for_prompt()}

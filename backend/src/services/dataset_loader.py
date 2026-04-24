@@ -5,14 +5,14 @@ from sqlalchemy import text
 from src.core.config import settings
 from src.db.session import engine
 
-# Реальный порядок колонок в train.csv без header.
-# В таблице НЕТ колонки id. Для идентификации используй order_id и tender_id.
+# train.csv now has a header row with this exact order.
+# Important: there is no id column. Use order_id for orders and tender_id for tenders.
 TRAIN_COLUMNS = [
     "city_id",
-    "user_id",
     "order_id",
-    "driver_id",
     "tender_id",
+    "user_id",
+    "driver_id",
     "offset_hours",
     "status_order",
     "status_tender",
@@ -35,10 +35,10 @@ TRAIN_COLUMNS = [
 
 TRAIN_COLUMN_TYPES = {
     "city_id": "INTEGER",
-    "user_id": "TEXT",
     "order_id": "TEXT",
-    "driver_id": "TEXT",
     "tender_id": "TEXT",
+    "user_id": "TEXT",
+    "driver_id": "TEXT",
     "offset_hours": "INTEGER",
     "status_order": "TEXT",
     "status_tender": "TEXT",
@@ -61,10 +61,10 @@ TRAIN_COLUMN_TYPES = {
 
 TRAIN_COLUMN_DESCRIPTIONS = {
     "city_id": "идентификатор города",
-    "user_id": "анонимизированный идентификатор пользователя",
     "order_id": "анонимизированный идентификатор заказа; используй вместо id заказа",
-    "driver_id": "анонимизированный идентификатор водителя",
     "tender_id": "анонимизированный идентификатор тендера/подбора водителя",
+    "user_id": "анонимизированный идентификатор пользователя",
+    "driver_id": "анонимизированный идентификатор водителя",
     "offset_hours": "смещение локального времени города относительно UTC в часах",
     "status_order": "итоговый статус заказа",
     "status_tender": "статус тендера или процесса подбора водителя",
@@ -88,10 +88,10 @@ TRAIN_COLUMN_DESCRIPTIONS = {
 CREATE_TRAIN_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS train (
     city_id INTEGER,
-    user_id TEXT,
     order_id TEXT,
-    driver_id TEXT,
     tender_id TEXT,
+    user_id TEXT,
+    driver_id TEXT,
     offset_hours INTEGER,
     status_order TEXT,
     status_tender TEXT,
@@ -117,6 +117,8 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS ix_train_city_id ON train(city_id);",
     "CREATE INDEX IF NOT EXISTS ix_train_order_id ON train(order_id);",
     "CREATE INDEX IF NOT EXISTS ix_train_tender_id ON train(tender_id);",
+    "CREATE INDEX IF NOT EXISTS ix_train_user_id ON train(user_id);",
+    "CREATE INDEX IF NOT EXISTS ix_train_driver_id ON train(driver_id);",
     "CREATE INDEX IF NOT EXISTS ix_train_order_timestamp ON train(order_timestamp);",
     "CREATE INDEX IF NOT EXISTS ix_train_status_order ON train(status_order);",
     "CREATE INDEX IF NOT EXISTS ix_train_status_tender ON train(status_tender);",
@@ -158,8 +160,8 @@ def ensure_train_table() -> None:
     with engine.begin() as conn:
         existing_columns = _existing_train_columns(conn)
         if existing_columns and existing_columns != TRAIN_COLUMNS:
-            # Dev/MVP behavior: if previous prototype created train with wrong columns
-            # (for example id/user_hash/order_hash), rebuild it from train.csv.
+            # Dev/MVP behavior: if an earlier prototype created/imported train
+            # with a wrong order of columns, rebuild it from the new train.csv.
             conn.execute(text("DROP TABLE IF EXISTS train CASCADE"))
 
         conn.execute(text(CREATE_TRAIN_TABLE_SQL))
@@ -188,7 +190,7 @@ def import_train_csv_if_needed() -> None:
     columns = ", ".join(TRAIN_COLUMNS)
     copy_sql = f"""
         COPY train ({columns})
-        FROM STDIN WITH (FORMAT csv, DELIMITER ',', HEADER false, NULL '')
+        FROM STDIN WITH (FORMAT csv, DELIMITER ',', HEADER true, NULL '')
     """
 
     raw_connection = engine.raw_connection()

@@ -6,11 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.router import api_router
 from src.core.config import settings
 from src.db.init_db import init_db
+from src.services.template_service import warm_template_cache
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    warm_template_cache()
     yield
 
 

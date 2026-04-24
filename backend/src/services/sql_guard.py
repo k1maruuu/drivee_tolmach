@@ -1,10 +1,11 @@
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 import sqlparse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from sqlparse.tokens import Comment, Keyword, Name
+from sqlparse.tokens import Comment
 
 from src.core.config import settings
 
@@ -73,23 +74,32 @@ def _first_keyword(statement) -> str | None:
     return None
 
 
-def _extract_tables(statement) -> set[str]:
+def _strip_sql_comments(sql: str) -> str:
+    sql = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
+    sql = re.sub(r"--.*?$", " ", sql, flags=re.MULTILINE)
+    return sql
+
+
+def _extract_tables(sql: str) -> set[str]:
+    """
+    Extract real table names from FROM/JOIN clauses.
+
+    This intentionally ignores derived tables like:
+    FROM (SELECT ... FROM train) t
+
+    The inner FROM train is still extracted by the regex, while the outer
+    FROM (...) alias is not treated as a table.
+    """
+    cleaned = _strip_sql_comments(sql)
     tables: set[str] = set()
-    expect_table = False
-    for token in statement.flatten():
-        value = token.value.strip()
-        upper = value.upper()
-        if not value or _is_comment_token(token):
-            continue
-        if token.ttype is Keyword and upper in {"FROM", "JOIN", "UPDATE", "INTO"}:
-            expect_table = True
-            continue
-        if expect_table:
-            if token.ttype in (Name, Keyword) or re.match(r"^[a-zA-Z_][a-zA-Z0-9_\.]*$", value):
-                tables.add(value.split(".")[-1].strip('"').lower())
-                expect_table = False
-            elif value not in {",", "("}:
-                expect_table = False
+    for match in re.finditer(
+        r"\b(?:FROM|JOIN)\s+(?!\()([a-zA-Z_][a-zA-Z0-9_\.]*)(?:\s+AS)?(?:\s+[a-zA-Z_][a-zA-Z0-9_]*)?",
+        cleaned,
+        flags=re.IGNORECASE,
+    ):
+        table = match.group(1).split(".")[-1].strip('"').lower()
+        if table:
+            tables.add(table)
     return tables
 
 
@@ -97,11 +107,20 @@ def _has_limit(sql: str) -> bool:
     return bool(re.search(r"\bLIMIT\b", sql, flags=re.IGNORECASE))
 
 
-def _append_limit(sql: str, limit: int) -> str:
-    sql = sql.strip().rstrip(";")
-    if _has_limit(sql):
-        return sql
-    return f"{sql} LIMIT {limit}"
+def _enforce_limit(sql: str, limit: int) -> str:
+    cleaned = sql.strip().rstrip(";")
+    match = re.search(r"\bLIMIT\s+(\d+)\s*$", cleaned, flags=re.IGNORECASE)
+    if match:
+        current_limit = int(match.group(1))
+        if current_limit <= limit:
+            return cleaned
+        return cleaned[: match.start()] + f"LIMIT {limit}"
+
+    if _has_limit(cleaned):
+        # Handles uncommon LIMIT forms like LIMIT ALL or parameterized LIMIT.
+        return f"SELECT * FROM ({cleaned}) AS nl2sql_limited LIMIT {limit}"
+
+    return f"{cleaned} LIMIT {limit}"
 
 
 def _safe_error(exc: Exception) -> str:
@@ -114,7 +133,7 @@ def normalize_sql(sql: str, limit: int | None = None) -> str:
     safe_limit = min(limit or settings.sql_default_limit, settings.sql_max_limit)
     cleaned = sql.strip().rstrip(";")
     cleaned = re.sub(r"\s+", " ", cleaned)
-    return _append_limit(cleaned, safe_limit)
+    return _enforce_limit(cleaned, safe_limit)
 
 
 def validate_sql(sql: str, limit: int | None = None) -> ValidationResult:
@@ -151,13 +170,13 @@ def validate_sql(sql: str, limit: int | None = None) -> ValidationResult:
     if re.search(r"\bSELECT\s+\*", upper_sql):
         warnings.append("SELECT * is not recommended; explicit columns are safer")
 
-    tables = _extract_tables(statement)
+    tables = _extract_tables(original_sql)
     cte_names = _extract_cte_names(original_sql)
     unknown_tables = tables - ALLOWED_TABLES - cte_names
     if unknown_tables:
         errors.append(f"Only table train is allowed. Unknown tables: {', '.join(sorted(unknown_tables))}")
 
-    if not tables:
+    if "train" not in tables:
         errors.append("Query must read from table train")
 
     normalized = None
@@ -173,13 +192,18 @@ def validate_sql(sql: str, limit: int | None = None) -> ValidationResult:
     )
 
 
-def validate_sql_against_database(db: Session, sql: str, limit: int | None = None) -> ValidationResult:
+def validate_sql_against_database(
+    db: Session,
+    sql: str,
+    limit: int | None = None,
+    params: dict[str, Any] | None = None,
+) -> ValidationResult:
     """
     Full validation for MVP guardrails.
 
     1. Static guardrails block dangerous statements.
     2. PostgreSQL EXPLAIN checks real executability: columns, functions, casts,
-       aliases, GROUP BY correctness, etc.
+       aliases, GROUP BY correctness, bind parameters, etc.
     3. No data is changed and no rows are fetched at validation stage.
     """
     validation = validate_sql(sql, limit=limit)
@@ -189,7 +213,7 @@ def validate_sql_against_database(db: Session, sql: str, limit: int | None = Non
     try:
         db.execute(text("SET TRANSACTION READ ONLY"))
         db.execute(text(f"SET LOCAL statement_timeout = {int(settings.sql_statement_timeout_ms)}"))
-        db.execute(text("EXPLAIN " + validation.normalized_sql))
+        db.execute(text("EXPLAIN " + validation.normalized_sql), params or {})
         db.rollback()
     except Exception as exc:
         db.rollback()

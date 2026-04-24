@@ -1,64 +1,55 @@
 # Drivee NL2SQL Backend
 
-Минимальная backend-основа под кейс Drivee: OAuth2-авторизация, Postgres, импорт `train.csv`, подключение локальной Ollama `qwen3:4b`, генерация безопасного SQL и выдача данных из таблицы `train`.
+Минимальный backend для MVP: пользователь пишет вопрос обычным языком, backend просит Ollama `qwen3:4b` сгенерировать SQL, валидирует SQL через guardrails + PostgreSQL `EXPLAIN`, выполняет только безопасный `SELECT` по таблице `train` и возвращает результат.
 
-## Быстрый запуск
+## Что внутри
+
+```text
+backend/                 # FastAPI backend
+data/train.csv           # dataset с header-строкой
+data/notes.md            # справочник смысла колонок для LLM
+data/goodprompts.txt     # шаблоны готовых запросов
+docker-compose.yml       # Postgres + Redis + Backend, заготовка под frontend
+.env.example             # пример env
+```
+
+## Важно про Ollama и данные
+
+Backend **не отправляет в Ollama весь train.csv и строки таблицы**.  
+В prompt отправляются только:
+
+- фактическая схема таблицы `train`;
+- `notes.md` со смыслом колонок;
+- бизнес-правила;
+- вопрос пользователя.
+
+Данные лежат в PostgreSQL. Ollama генерирует только SQL, потом backend проверяет и выполняет SQL в базе.
+
+## Запуск
 
 ```bash
 cp .env.example .env
-# убедись, что локально запущена Ollama и модель скачана:
-# ollama pull qwen3:4b
-# ollama serve
-
+ollama pull qwen3:4b
+ollama serve
 docker compose up --build
 ```
 
-Swagger: http://localhost:8000/docs
+Swagger:
 
-Демо-аккаунт:
+```text
+http://localhost:8000/docs
+```
+
+## Авторизация OAuth2
+
+В Swagger нажми **Authorize**:
 
 ```text
 username: admin@example.com
 password: admin123
 ```
 
-При первом старте backend создаст таблицы и импортирует `data/train.csv` в Postgres. CSV большой, поэтому первый запуск может занять время.
-
-## Авторизация OAuth2 в Swagger
-
-1. Открой `http://localhost:8000/docs`.
-2. Нажми кнопку **Authorize** справа сверху.
-3. Заполни:
-
-```text
-username: admin@example.com
-password: admin123
-```
-
-4. Нажми **Authorize**.
-5. После этого защищенные эндпоинты `/api/analytics/*` будут работать из Swagger.
-
-Технически используется OAuth2 Password Bearer flow:
-
-- `POST /api/auth/token` — OAuth2 token endpoint для Swagger.
-- `POST /api/auth/login` — alias, тоже принимает OAuth2 form-data.
-- `GET /api/auth/me` — текущий пользователь по Bearer token.
-- `POST /api/auth/register` — регистрация нового пользователя через JSON.
-
-## Основные эндпоинты
-
-- `POST /api/auth/token` — OAuth2-вход, получить JWT.
-- `POST /api/auth/login` — то же самое, совместимый login endpoint.
-- `POST /api/auth/register` — регистрация пользователя.
-- `GET /api/auth/me` — текущий пользователь.
-- `GET /api/analytics/schema` — схема таблицы `train`.
-- `POST /api/analytics/ask` — вопрос на русском/английском → SQL через Ollama → проверка → выполнение.
-- `POST /api/analytics/sql/validate` — проверить SQL без выполнения.
-- `POST /api/analytics/sql/execute` — выполнить SELECT SQL после guardrails.
-
-## Пример через curl
-
-OAuth2 token endpoint принимает `application/x-www-form-urlencoded`, не JSON:
+Или через curl:
 
 ```bash
 curl -X POST http://localhost:8000/api/auth/token \
@@ -66,99 +57,146 @@ curl -X POST http://localhost:8000/api/auth/token \
   -d "username=admin@example.com&password=admin123"
 ```
 
-Запрос к ИИ:
+## Dataset
 
-```bash
-curl -X POST http://localhost:8000/api/analytics/ask \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"question":"Самая высокая цена поездки за 2025 год", "max_rows": 50}'
-```
-
-Проверка текущего пользователя:
-
-```bash
-curl http://localhost:8000/api/auth/me \
-  -H "Authorization: Bearer <TOKEN>"
-```
-
-## Важно про Ollama
-
-В Docker `localhost` внутри backend-контейнера — это сам контейнер, поэтому в `.env` по умолчанию стоит:
+`data/train.csv` импортируется в PostgreSQL при старте, если:
 
 ```env
-OLLAMA_BASE_URL=http://host.docker.internal:11434
+IMPORT_TRAIN_ON_STARTUP=true
 ```
 
-Если запускаешь backend не в Docker, а напрямую на Windows/Linux/Mac, поставь:
+Таблица называется:
 
-```env
-OLLAMA_BASE_URL=http://localhost:11434
+```text
+train
 ```
 
-## SQL guardrails
+Колонки:
 
-Backend разрешает только безопасные запросы:
+```text
+city_id, order_id, tender_id, user_id, driver_id, offset_hours,
+status_order, status_tender, order_timestamp, tender_timestamp,
+driveraccept_timestamp, driverarrived_timestamp,
+driverstarttheride_timestamp, driverdone_timestamp,
+clientcancel_timestamp, drivercancel_timestamp, order_modified_local,
+cancel_before_accept_local, distance_in_meters, duration_in_seconds,
+price_order_local, price_tender_local, price_start_local
+```
 
-- только `SELECT` или `WITH ... SELECT`;
-- только таблица `train`;
-- запрещены `DROP`, `DELETE`, `UPDATE`, `INSERT`, `ALTER`, `TRUNCATE`, `CREATE` и другие изменяющие команды;
-- автоматически добавляется `LIMIT`, если его нет;
-- используется statement timeout.
-
-## Обновление схемы train
-
-В этой версии таблица `train` создаётся по `data/notes.md` и фактическому порядку колонок в `train.csv`.
-
-Важное изменение:
-
-- колонки `id` больше нет;
-- идентификатор заказа — `order_id`;
-- идентификатор тендера — `tender_id`;
-- `notes.md` передаётся в prompt для Ollama, чтобы модель понимала смысл колонок.
-
-Если у тебя уже был запущен старый volume с неправильной таблицей `train`, проще всего пересоздать базу:
+Если меняешь `train.csv` или порядок колонок, лучше пересоздать volume базы:
 
 ```bash
 docker compose down -v
 docker compose up --build
 ```
 
-При старте backend сам проверит список колонок `train`. Если найдёт старую схему с `id/user_hash/order_hash`, он пересоздаст таблицу и импортирует CSV заново.
+## Основной endpoint NL → SQL
 
-## Проверка SQL теперь сложнее
-
-`/api/analytics/sql/validate` теперь делает не только статическую проверку опасных команд, но и реальную проверку через PostgreSQL `EXPLAIN`.
-
-Это значит, что запросы с несуществующими колонками будут заблокированы до выполнения, например:
-
-```sql
-SELECT id, price_order_local FROM train ORDER BY price_order_local DESC LIMIT 50;
+```text
+POST /api/analytics/ask
 ```
 
-Потому что `id` нет в таблице. Правильный вариант:
-
-```sql
-SELECT order_id, tender_id, price_order_local
-FROM train
-ORDER BY price_order_local DESC NULLS LAST
-LIMIT 50;
-```
-
-Пример вопроса:
+Пример:
 
 ```json
 {
-  "question": "напиши мне 50 самых дорогих заказов",
-  "max_rows": 50
+  "question": "напиши топ 100 самый дорогой заказ за 2026",
+  "max_rows": 1
 }
 ```
 
-Ожидаемый SQL должен быть похож на:
+Backend ограничит результат по `max_rows`, даже если LLM попробует поставить больший `LIMIT`.
 
-```sql
-SELECT order_id, tender_id, city_id, status_order, order_timestamp, price_order_local
-FROM train
-ORDER BY price_order_local DESC NULLS LAST
-LIMIT 50;
+## SQL guardrails
+
+Backend блокирует:
+
+- `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `COPY` и другие опасные команды;
+- обращения к таблицам кроме `train`;
+- SQL, который не проходит PostgreSQL `EXPLAIN`;
+- SQL с несуществующими колонками.
+
+Проверка:
+
+```text
+POST /api/analytics/sql/validate
+```
+
+Выполнение безопасного SQL:
+
+```text
+POST /api/analytics/sql/execute
+```
+
+## Шаблоны запросов для фронта
+
+Шаблоны берутся из `data/goodprompts.txt`, автоматически заменяют старое имя таблицы `anonymized_incity_orders` на `train` и кэшируются в Redis.
+
+Получить список кнопок для фронта:
+
+```text
+GET /api/templates
+```
+
+Получить один шаблон:
+
+```text
+GET /api/templates/{template_id}
+```
+
+Выполнить шаблон:
+
+```text
+POST /api/templates/{template_id}/execute
+```
+
+Для шаблонов без параметров:
+
+```json
+{
+  "max_rows": 100
+}
+```
+
+Для шаблонов с параметрами:
+
+```json
+{
+  "params": {
+    "date_from": "2026-01-01",
+    "date_to": "2026-02-01"
+  },
+  "max_rows": 100
+}
+```
+
+Результаты выполнения шаблонов тоже кэшируются в Redis на время:
+
+```env
+TEMPLATE_RESULT_CACHE_TTL_SECONDS=600
+```
+
+## Подключение к Postgres через pgAdmin
+
+```text
+Host: localhost
+Port: 5432
+Database: drivee
+User: drivee
+Password: drivee
+Table: train
+```
+
+## Если Ollama не видна из Docker
+
+В `.env` должно быть:
+
+```env
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+```
+
+Если backend запускаешь без Docker:
+
+```env
+OLLAMA_BASE_URL=http://localhost:11434
 ```

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     backend_cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     database_url: str = "postgresql+psycopg2://drivee:drivee@localhost:5432/drivee"
+    redis_url: str = "redis://localhost:6379/0"
 
     jwt_secret_key: str = Field(default="change-me-super-secret-key-at-least-32-chars", min_length=16)
     jwt_algorithm: str = "HS256"
@@ -29,11 +30,15 @@ class Settings(BaseSettings):
 
     train_csv_path: str = "/data/train.csv"
     train_notes_path: str = "/data/notes.md"
+    good_prompts_path: str = "/data/goodprompts.txt"
     import_train_on_startup: bool = True
 
     sql_default_limit: int = 100
     sql_max_limit: int = 500
     sql_statement_timeout_ms: int = 15_000
+
+    templates_cache_ttl_seconds: int = 60 * 60 * 24
+    template_result_cache_ttl_seconds: int = 60 * 10
 
     @property
     def cors_origins(self) -> List[str]:

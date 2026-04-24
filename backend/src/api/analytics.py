@@ -43,6 +43,7 @@ def schema(current_user: User = Depends(get_current_user)):
         "columns": TRAIN_COLUMNS,
         "column_descriptions": TRAIN_COLUMN_DESCRIPTIONS,
         "notes_md": read_train_notes(),
+        "dataset_loading": "train.csv is imported into PostgreSQL table train on startup when IMPORT_TRAIN_ON_STARTUP=true. Ollama receives only schema + notes.md, not the whole CSV.",
         "semantic_notes": {
             "orders": "COUNT(DISTINCT order_id) for business order count; raw rows are order_id + tender_id combinations",
             "order_identifier": "order_id",

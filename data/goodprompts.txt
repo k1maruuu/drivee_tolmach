@@ -1,0 +1,400 @@
+"Сколько всего было заказов?" ->
+SELECT COUNT(DISTINCT order_id) AS total_orders
+FROM train;
+
+"Сколько заказов было завершено?" ->
+SELECT COUNT(DISTINCT order_id) AS done_orders
+FROM train
+WHERE status_order = 'done';
+
+"Сколько заказов было отменено?" ->
+SELECT COUNT(DISTINCT order_id) AS canceled_orders
+FROM train
+WHERE status_order = 'cancel';
+
+"Сколько заказов было удалено?" ->
+SELECT COUNT(DISTINCT order_id) AS deleted_orders
+FROM train
+WHERE status_order = 'delete';
+
+"Сколько заказов было отклонено?" ->
+SELECT COUNT(DISTINCT order_id) AS declined_orders
+FROM train
+WHERE status_tender = 'decline';
+
+"Сколько всего было отклонений тендера?" ->
+SELECT COUNT(*) AS declined_tenders
+FROM train
+WHERE status_tender = 'decline';
+
+"Сколько заказов отменил клиент?" ->
+SELECT COUNT(DISTINCT order_id) AS client_canceled_orders
+FROM train
+WHERE clientcancel_timestamp IS NOT NULL;
+
+"Сколько заказов отменил водитель?" ->
+SELECT COUNT(DISTINCT order_id) AS driver_canceled_orders
+FROM train
+WHERE drivercancel_timestamp IS NOT NULL;
+
+"Сколько заказов отменили до принятия водителем?" ->
+SELECT COUNT(DISTINCT order_id) AS canceled_before_accept
+FROM train
+WHERE cancel_before_accept_local IS NOT NULL;
+
+"Сколько заказов было без назначенного водителя?" ->
+SELECT COUNT(DISTINCT order_id) AS orders_without_driver
+FROM train
+WHERE driver_id IS NULL;
+
+"Сколько заказов было за день?" ->
+SELECT COUNT(DISTINCT order_id) AS total_orders
+FROM train
+WHERE order_timestamp >= :date_from
+  AND order_timestamp < :date_to;
+
+"Сколько завершенных заказов было за период?" ->
+SELECT COUNT(DISTINCT order_id) AS done_orders
+FROM train
+WHERE status_order = 'done'
+  AND order_timestamp >= :date_from
+  AND order_timestamp < :date_to;
+
+"Сколько отклоненных заказов было за период?" ->
+SELECT COUNT(DISTINCT order_id) AS declined_orders
+FROM train
+WHERE status_tender = 'decline'
+  AND order_timestamp >= :date_from
+  AND order_timestamp < :date_to;
+
+"Сколько отмен было за период?" ->
+SELECT COUNT(DISTINCT order_id) AS canceled_orders
+FROM train
+WHERE status_order = 'cancel'
+  AND order_timestamp >= :date_from
+  AND order_timestamp < :date_to;
+  
+"Сколько заказов было по каждому городу?" ->
+SELECT city_id, COUNT(DISTINCT order_id) AS total_orders
+FROM train
+GROUP BY city_id
+ORDER BY total_orders DESC;
+
+"В каком городе было больше всего заказов?" ->
+SELECT city_id, COUNT(DISTINCT order_id) AS total_orders
+FROM train
+GROUP BY city_id
+ORDER BY total_orders DESC
+LIMIT 1;
+
+"Сколько отклонений было по каждому городу?" ->
+SELECT city_id, COUNT(DISTINCT order_id) AS declined_orders
+FROM train
+WHERE status_tender = 'decline'
+GROUP BY city_id
+ORDER BY declined_orders DESC;
+
+"Сколько завершенных заказов было в конкретном городе?" ->
+SELECT COUNT(DISTINCT order_id) AS done_orders
+FROM train
+WHERE city_id = :city_id
+  AND status_order = 'done';
+
+"Сколько заказов было по дням?" ->
+SELECT DATE(order_timestamp) AS day, COUNT(DISTINCT order_id) AS total_orders
+FROM train
+GROUP BY DATE(order_timestamp)
+ORDER BY day;
+
+"Сколько завершенных заказов было по дням?" ->
+SELECT DATE(order_timestamp) AS day, COUNT(DISTINCT order_id) AS done_orders
+FROM train
+WHERE status_order = 'done'
+GROUP BY DATE(order_timestamp)
+ORDER BY day;
+
+"Сколько заказов было по неделям?" ->
+SELECT DATE_TRUNC('week', order_timestamp) AS week, COUNT(DISTINCT order_id) AS total_orders
+FROM train
+GROUP BY DATE_TRUNC('week', order_timestamp)
+ORDER BY week;
+
+"В какие часы заказов больше всего?" ->
+SELECT EXTRACT(HOUR FROM order_timestamp) AS hour, COUNT(DISTINCT order_id) AS total_orders
+FROM train
+GROUP BY EXTRACT(HOUR FROM order_timestamp)
+ORDER BY total_orders DESC;
+
+"В какие часы больше всего отмен?" ->
+SELECT EXTRACT(HOUR FROM order_timestamp) AS hour, COUNT(DISTINCT order_id) AS canceled_orders
+FROM train
+WHERE status_order = 'cancel'
+GROUP BY EXTRACT(HOUR FROM order_timestamp)
+ORDER BY canceled_orders DESC;
+
+"Какой общий оборот по завершенным заказам?" ->
+SELECT SUM(price_order_local) AS total_revenue
+FROM train
+WHERE status_order = 'done';
+
+"Какой средний чек?" ->
+SELECT AVG(price_order_local) AS avg_order_price
+FROM train
+WHERE status_order = 'done';
+
+"Какой средний чек по городам?" ->
+SELECT city_id, AVG(price_order_local) AS avg_order_price
+FROM train
+WHERE status_order = 'done'
+GROUP BY city_id
+ORDER BY avg_order_price DESC;
+
+"Какая максимальная стоимость заказа?" ->
+SELECT MAX(price_order_local) AS max_order_price
+FROM train;
+
+"Какая минимальная стоимость заказа?" ->
+SELECT MIN(price_order_local) AS min_order_price
+FROM train;
+
+"Насколько итоговая цена отличается от стартовой в среднем?" ->
+SELECT AVG(price_order_local - price_start_local) AS avg_price_diff
+FROM train
+WHERE status_order = 'done';
+
+"Насколько цена тендера отличается от итоговой в среднем?" ->
+SELECT AVG(price_order_local - price_tender_local) AS avg_tender_to_final_diff
+FROM train
+WHERE status_order = 'done'
+  AND price_tender_local IS NOT NULL;
+
+"Сколько в среднем проходит от создания заказа до принятия водителем?" ->
+SELECT AVG(EXTRACT(EPOCH FROM (driveraccept_timestamp - order_timestamp)) / 60.0) AS avg_minutes_to_accept
+FROM train
+WHERE driveraccept_timestamp IS NOT NULL;
+
+"Сколько в среднем проходит от принятия до прибытия водителя?" ->
+SELECT AVG(EXTRACT(EPOCH FROM (driverarrived_timestamp - driveraccept_timestamp)) / 60.0) AS avg_minutes_to_arrive
+FROM train
+WHERE driveraccept_timestamp IS NOT NULL
+  AND driverarrived_timestamp IS NOT NULL;
+
+"Сколько в среднем длится поездка?" ->
+SELECT AVG(duration_in_seconds) / 60.0 AS avg_ride_minutes
+FROM train
+WHERE status_order = 'done';
+
+"Какое среднее расстояние поездки?" ->
+SELECT AVG(distance_in_meters) / 1000.0 AS avg_distance_km
+FROM train
+WHERE status_order = 'done';
+
+"Сколько в среднем проходит от старта поездки до завершения?" ->
+SELECT AVG(EXTRACT(EPOCH FROM (driverdone_timestamp - driverstarttheride_timestamp)) / 60.0) AS avg_minutes_ride
+FROM train
+WHERE driverstarttheride_timestamp IS NOT NULL
+  AND driverdone_timestamp IS NOT NULL;
+
+"Какой процент заказов был завершен?" ->
+SELECT
+  ROUND(
+    100.0 * COUNT(DISTINCT CASE WHEN status_order = 'done' THEN order_id END)
+    / COUNT(DISTINCT order_id),
+    2
+  ) AS done_rate_percent
+FROM train;
+
+"Какой процент заказов был отменен?" ->
+SELECT
+  ROUND(
+    100.0 * COUNT(DISTINCT CASE WHEN status_order = 'cancel' THEN order_id END)
+    / COUNT(DISTINCT order_id),
+    2
+  ) AS cancel_rate_percent
+FROM train;
+
+"Какой процент заказов имел хотя бы одно отклонение тендера?" ->
+SELECT
+  ROUND(
+    100.0 * COUNT(DISTINCT CASE WHEN status_tender = 'decline' THEN order_id END)
+    / COUNT(DISTINCT order_id),
+    2
+  ) AS decline_rate_percent
+FROM train;
+
+"Какой процент заказов дошел до назначения водителя?" ->
+SELECT
+  ROUND(
+    100.0 * COUNT(DISTINCT CASE WHEN driver_id IS NOT NULL THEN order_id END)
+    / COUNT(DISTINCT order_id),
+    2
+  ) AS driver_assigned_rate_percent
+FROM train;
+
+"Сколько заказов выполнил каждый водитель?" ->
+SELECT driver_id, COUNT(DISTINCT order_id) AS done_orders
+FROM train
+WHERE status_order = 'done'
+  AND driver_id IS NOT NULL
+GROUP BY driver_id
+ORDER BY done_orders DESC;
+
+"Кто из водителей выполнил больше всего заказов?" ->
+SELECT driver_id, COUNT(DISTINCT order_id) AS done_orders
+FROM train
+WHERE status_order = 'done'
+  AND driver_id IS NOT NULL
+GROUP BY driver_id
+ORDER BY done_orders DESC
+LIMIT 10;
+
+"У каких водителей больше всего отмен?" ->
+SELECT driver_id, COUNT(DISTINCT order_id) AS canceled_orders
+FROM train
+WHERE drivercancel_timestamp IS NOT NULL
+  AND driver_id IS NOT NULL
+GROUP BY driver_id
+ORDER BY canceled_orders DESC;
+
+"Какое среднее время до принятия заказа у каждого водителя?" ->
+SELECT driver_id,
+       AVG(EXTRACT(EPOCH FROM (driveraccept_timestamp - order_timestamp)) / 60.0) AS avg_minutes_to_accept
+FROM train
+WHERE driver_id IS NOT NULL
+  AND driveraccept_timestamp IS NOT NULL
+GROUP BY driver_id
+ORDER BY avg_minutes_to_accept;
+
+"Сколько заказов сделал каждый пользователь?" ->
+SELECT user_id, COUNT(DISTINCT order_id) AS total_orders
+FROM train
+GROUP BY user_id
+ORDER BY total_orders DESC;
+
+"Кто сделал больше всего заказов?" ->
+SELECT user_id, COUNT(DISTINCT order_id) AS total_orders
+FROM train
+GROUP BY user_id
+ORDER BY total_orders DESC
+LIMIT 10;
+
+"Сколько пользователей сделали хотя бы один заказ?" ->
+SELECT COUNT(DISTINCT user_id) AS total_users
+FROM train;
+
+"Сколько в среднем тендеров приходится на один заказ?" ->
+SELECT AVG(tender_count) AS avg_tenders_per_order
+FROM (
+    SELECT order_id, COUNT(DISTINCT tender_id) AS tender_count
+    FROM train
+    GROUP BY order_id
+) t;
+
+"Сколько заказов имели больше одного тендера?" ->
+SELECT COUNT(*) AS orders_with_multiple_tenders
+FROM (
+    SELECT order_id
+    FROM train
+    GROUP BY order_id
+    HAVING COUNT(DISTINCT tender_id) > 1
+) t;
+
+"Какие заказы имели больше всего тендеров?" ->
+SELECT order_id, COUNT(DISTINCT tender_id) AS tender_count
+FROM train
+GROUP BY order_id
+ORDER BY tender_count DESC
+LIMIT 20;
+
+"Покажи топ-10 городов по числу отмен" ->
+SELECT city_id, COUNT(DISTINCT order_id) AS canceled_orders
+FROM train
+WHERE status_order = 'cancel'
+GROUP BY city_id
+ORDER BY canceled_orders DESC
+LIMIT 10;
+
+"Покажи топ-10 часов с самым высоким спросом" ->
+SELECT EXTRACT(HOUR FROM order_timestamp) AS hour, COUNT(DISTINCT order_id) AS total_orders
+FROM train
+GROUP BY EXTRACT(HOUR FROM order_timestamp)
+ORDER BY total_orders DESC
+LIMIT 10;
+
+"Покажи средний чек и число заказов по дням" ->
+SELECT DATE(order_timestamp) AS day,
+       COUNT(DISTINCT order_id) AS total_orders,
+       AVG(price_order_local) AS avg_order_price
+FROM train
+WHERE status_order = 'done'
+GROUP BY DATE(order_timestamp)
+ORDER BY day;
+
+"Покажи города, где самый высокий процент отклонений" ->
+SELECT city_id,
+       ROUND(
+         100.0 * COUNT(DISTINCT CASE WHEN status_tender = 'decline' THEN order_id END)
+         / COUNT(DISTINCT order_id),
+         2
+       ) AS decline_rate_percent
+FROM train
+GROUP BY city_id
+ORDER BY decline_rate_percent DESC;
+
+"Сколько было заказов сегодня?" ->
+SELECT COUNT(DISTINCT order_id) AS total_orders
+FROM train
+WHERE order_timestamp >= CURRENT_DATE
+  AND order_timestamp < CURRENT_DATE + INTERVAL '1 day';
+
+"Сколько было заказов вчера?" ->
+SELECT COUNT(DISTINCT order_id) AS total_orders
+FROM train
+WHERE order_timestamp >= CURRENT_DATE - INTERVAL '1 day'
+  AND order_timestamp < CURRENT_DATE;
+
+"Сколько было заказов за последние 7 дней?" ->
+SELECT COUNT(DISTINCT order_id) AS total_orders
+FROM train
+WHERE order_timestamp >= CURRENT_DATE - INTERVAL '7 day';
+
+"Сколько было заказов за последние 30 дней?" ->
+SELECT COUNT(DISTINCT order_id) AS total_orders
+FROM train
+WHERE order_timestamp >= CURRENT_DATE - INTERVAL '30 day';
+
+"Сколько было заказов за текущий месяц?" ->
+SELECT COUNT(DISTINCT order_id) AS total_orders
+FROM train
+WHERE order_timestamp >= DATE_TRUNC('month', CURRENT_DATE)
+  AND order_timestamp < DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month';
+
+"Сколько было заказов за прошлый месяц?" ->
+SELECT COUNT(DISTINCT order_id) AS total_orders
+FROM train
+WHERE order_timestamp >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month'
+  AND order_timestamp < DATE_TRUNC('month', CURRENT_DATE);
+
+"Сколько было заказов за текущий квартал?" ->
+SELECT COUNT(DISTINCT order_id) AS total_orders
+FROM train
+WHERE order_timestamp >= DATE_TRUNC('quarter', CURRENT_DATE)
+  AND order_timestamp < DATE_TRUNC('quarter', CURRENT_DATE) + INTERVAL '3 month';
+
+"Сколько было заказов за прошлый квартал?" ->
+SELECT COUNT(DISTINCT order_id) AS total_orders
+FROM train
+WHERE order_timestamp >= DATE_TRUNC('quarter', CURRENT_DATE) - INTERVAL '3 month'
+  AND order_timestamp < DATE_TRUNC('quarter', CURRENT_DATE);
+
+"Сколько было заказов за текущий год?" ->
+SELECT COUNT(DISTINCT order_id) AS total_orders
+FROM train
+WHERE order_timestamp >= DATE_TRUNC('year', CURRENT_DATE)
+  AND order_timestamp < DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year';
+
+"Сколько было заказов за прошлый год?" ->
+SELECT COUNT(DISTINCT order_id) AS total_orders
+FROM train
+WHERE order_timestamp >= DATE_TRUNC('year', CURRENT_DATE) - INTERVAL '1 year'
+  AND order_timestamp < DATE_TRUNC('year', CURRENT_DATE);
