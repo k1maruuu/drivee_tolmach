@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from src.core.config import settings
 from src.core.security import hash_password
 from src.db.session import Base, SessionLocal, engine
-from src.models import QueryLog, User  # noqa: F401
+from src.models import QueryHistory, QueryLog, SavedReport, User  # noqa: F401
 from src.services.dataset_loader import import_train_csv_if_needed
 
 

@@ -9,5 +9,4 @@ venv/
 *.log
 .DS_Store
 
-
 *.csv

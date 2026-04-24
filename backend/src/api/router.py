@@ -1,11 +1,12 @@
 from fastapi import APIRouter
 
-from src.api import analytics, auth, templates
+from src.api import analytics, auth, reports, templates
 
 api_router = APIRouter()
 api_router.include_router(auth.router)
 api_router.include_router(analytics.router)
 api_router.include_router(templates.router)
+api_router.include_router(reports.router)
 
 
 @api_router.get("/health", tags=["health"])

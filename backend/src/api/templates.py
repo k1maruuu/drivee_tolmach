@@ -1,3 +1,5 @@
+from time import perf_counter
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -7,6 +9,7 @@ from src.db.session import get_db
 from src.models.user import User
 from src.schemas.analytics import SqlValidationResponse
 from src.schemas.templates import QueryTemplateRead, TemplateExecuteRequest, TemplateExecuteResponse
+from src.services.history_service import create_query_history, now_ms
 from src.services.query_executor import execute_readonly_query
 from src.services.redis_cache import get_json, set_json
 from src.services.sql_guard import validate_sql_against_database
@@ -51,6 +54,7 @@ def execute_query_template(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    started_at = perf_counter()
     template = get_template(template_id)
     if not template:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
@@ -75,10 +79,35 @@ def execute_query_template(
     cached = get_json(cache_key)
     if cached is not None:
         cached["cache_hit"] = True
+        create_query_history(
+            db,
+            current_user=current_user,
+            question=str(template["question"]),
+            generated_sql=str(cached.get("sql", sql)),
+            source="template_cache",
+            template_id=template_id,
+            template_title=str(template["title"]),
+            result=cached.get("result"),
+            confidence=1.0,
+            execution_time_ms=now_ms(started_at),
+        )
         return cached
 
     validation = validate_sql_against_database(db, sql, limit=max_rows, params=provided_params)
     if not validation.is_valid or not validation.normalized_sql:
+        create_query_history(
+            db,
+            current_user=current_user,
+            question=str(template["question"]),
+            generated_sql=sql,
+            source="template",
+            template_id=template_id,
+            template_title=str(template["title"]),
+            status="blocked",
+            error_message="; ".join(validation.errors),
+            confidence=1.0,
+            execution_time_ms=now_ms(started_at),
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"errors": validation.errors, "sql": sql},
@@ -96,4 +125,16 @@ def execute_query_template(
         "guardrails": _validation_response(validation),
     }
     set_json(cache_key, response, settings.template_result_cache_ttl_seconds)
+    create_query_history(
+        db,
+        current_user=current_user,
+        question=str(template["question"]),
+        generated_sql=validation.normalized_sql,
+        source="template",
+        template_id=template_id,
+        template_title=str(template["title"]),
+        result=result,
+        confidence=1.0,
+        execution_time_ms=now_ms(started_at),
+    )
     return response

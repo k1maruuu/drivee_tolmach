@@ -200,3 +200,143 @@ OLLAMA_BASE_URL=http://host.docker.internal:11434
 ```env
 OLLAMA_BASE_URL=http://localhost:11434
 ```
+
+## Проверка шаблонов перед Ollama
+
+`POST /api/analytics/ask` теперь работает так:
+
+1. Сначала backend ищет вопрос в шаблонах из `data/goodprompts.txt`.
+2. Если найден точный или очень близкий шаблон, SQL шаблона сразу валидируется через guardrails и PostgreSQL `EXPLAIN`.
+3. Если шаблон валиден, backend выполняет SQL и возвращает результат. Ollama в этом сценарии не вызывается.
+4. Если шаблон не найден, backend отправляет вопрос в Ollama и работает по обычному NL→SQL сценарию.
+
+В ответе появился признак источника:
+
+```json
+{
+  "source": "template",
+  "template_id": "tpl_001_...",
+  "template_title": "Сколько всего было заказов?",
+  "template_match_score": 1.0,
+  "cache_hit": false
+}
+```
+
+Если `source = template`, значит ИИ/Ollama не вызывалась. Если `cache_hit = true`, результат взят из Redis.
+
+Для шаблонов с параметрами можно передавать их прямо в `/api/analytics/ask`:
+
+```json
+{
+  "question": "Сколько заказов было за день?",
+  "max_rows": 1,
+  "template_params": {
+    "date_from": "2026-01-01",
+    "date_to": "2026-01-02"
+  }
+}
+```
+
+Порог похожести шаблона регулируется в `.env`:
+
+```env
+TEMPLATE_MATCH_THRESHOLD=0.88
+```
+
+## История запросов и сохранение отчётов
+
+Backend теперь сохраняет пользовательскую историю аналитических запросов и позволяет сохранять удачные запросы как отчёты для повторного использования.
+
+### История запросов
+
+Каждый успешный или заблокированный запрос из `/api/analytics/ask`, `/api/analytics/sql/execute`, `/api/templates/{template_id}/execute` и повторного запуска сохранённого отчёта попадает в историю.
+
+```http
+GET /api/reports/history
+```
+
+Поддерживаются параметры:
+
+```text
+limit=50
+offset=0
+status=ok | blocked
+source=llm | template | template_cache | manual_sql | saved_report
+```
+
+В истории хранятся:
+
+- исходный вопрос;
+- источник ответа: шаблон, ИИ, cache, ручной SQL или сохранённый отчёт;
+- сгенерированный SQL;
+- статус выполнения;
+- preview первых строк результата;
+- количество строк;
+- время выполнения;
+- confidence.
+
+### Сохранить отчёт из истории
+
+```http
+POST /api/reports/save
+```
+
+Пример:
+
+```json
+{
+  "title": "Самые дорогие заказы 2026",
+  "description": "Быстрый отчёт для демо",
+  "history_id": 1,
+  "default_max_rows": 100
+}
+```
+
+### Сохранить отчёт вручную
+
+```json
+{
+  "title": "Заказы по городам",
+  "question": "Сколько заказов было по каждому городу?",
+  "sql": "SELECT city_id, COUNT(DISTINCT order_id) AS total_orders FROM train GROUP BY city_id ORDER BY total_orders DESC",
+  "source": "manual",
+  "default_max_rows": 100
+}
+```
+
+### Получить каталог отчётов
+
+```http
+GET /api/reports
+GET /api/reports/{report_id}
+```
+
+### Повторно выполнить сохранённый отчёт
+
+```http
+POST /api/reports/{report_id}/execute
+```
+
+Тело запроса можно оставить пустым:
+
+```json
+{}
+```
+
+Или передать параметры, если сохранённый SQL был параметризован:
+
+```json
+{
+  "params": {
+    "date_from": "2026-01-01",
+    "date_to": "2026-02-01"
+  },
+  "max_rows": 100
+}
+```
+
+### Удалить отчёт
+
+```http
+DELETE /api/reports/{report_id}
+```

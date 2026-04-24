@@ -1,3 +1,5 @@
+from time import perf_counter
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -8,6 +10,7 @@ from src.models.query_log import QueryLog
 from src.models.user import User
 from src.schemas.analytics import AskRequest, AskResponse, SqlRequest, SqlValidationResponse
 from src.services.dataset_loader import TRAIN_COLUMNS, TRAIN_COLUMN_DESCRIPTIONS, read_train_notes
+from src.services.history_service import create_query_history, now_ms
 from src.services.ollama_client import generate_sql
 from src.services.query_executor import execute_readonly_query
 from src.services.redis_cache import get_json, set_json
@@ -52,6 +55,7 @@ def _execute_matched_template(
     current_user: User,
 ) -> AskResponse:
     """Execute template directly from /analytics/ask without calling Ollama."""
+    started_at = perf_counter()
     missing_params = _missing_template_params(template, params)
     if missing_params:
         raise HTTPException(
@@ -72,6 +76,18 @@ def _execute_matched_template(
         cached_result = cached.get("result")
         cached_guardrails = cached.get("guardrails")
         if cached_result and cached_guardrails:
+            create_query_history(
+                db,
+                current_user=current_user,
+                question=question,
+                generated_sql=str(cached.get("sql", sql)),
+                source="template_cache",
+                template_id=str(template.get("id")),
+                template_title=str(template.get("title")),
+                result=cached_result,
+                confidence=1.0,
+                execution_time_ms=now_ms(started_at),
+            )
             return AskResponse(
                 question=question,
                 sql=str(cached.get("sql", sql)),
@@ -88,16 +104,30 @@ def _execute_matched_template(
 
     validation = validate_sql_against_database(db, sql, limit=max_rows, params=params)
     if not validation.is_valid or not validation.normalized_sql:
+        error_message = "; ".join(validation.errors)
         log = QueryLog(
             user_id=current_user.id,
             question=question,
             generated_sql=sql,
             status="template_blocked",
-            error_message="; ".join(validation.errors),
+            error_message=error_message,
             confidence=1.0,
         )
         db.add(log)
         db.commit()
+        create_query_history(
+            db,
+            current_user=current_user,
+            question=question,
+            generated_sql=sql,
+            source="template",
+            template_id=str(template.get("id")),
+            template_title=str(template.get("title")),
+            status="blocked",
+            error_message=error_message,
+            confidence=1.0,
+            execution_time_ms=now_ms(started_at),
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"errors": validation.errors, "sql": sql, "template_id": template.get("id")},
@@ -105,6 +135,7 @@ def _execute_matched_template(
 
     result = execute_readonly_query(db, validation.normalized_sql, params=params)
     guardrails = _validation_response(validation)
+    execution_time_ms = now_ms(started_at)
 
     response_payload = {
         "template_id": template.get("id"),
@@ -126,6 +157,18 @@ def _execute_matched_template(
     )
     db.add(log)
     db.commit()
+    create_query_history(
+        db,
+        current_user=current_user,
+        question=question,
+        generated_sql=validation.normalized_sql,
+        source="template",
+        template_id=str(template.get("id")),
+        template_title=str(template.get("title")),
+        result=result,
+        confidence=1.0,
+        execution_time_ms=execution_time_ms,
+    )
 
     return AskResponse(
         question=question,
@@ -183,14 +226,35 @@ def execute_sql_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    started_at = perf_counter()
     validation = validate_sql_against_database(db, data.sql, limit=data.max_rows)
     if not validation.is_valid or not validation.normalized_sql:
+        create_query_history(
+            db,
+            current_user=current_user,
+            question="Manual SQL execution",
+            generated_sql=data.sql,
+            source="manual_sql",
+            status="blocked",
+            error_message="; ".join(validation.errors),
+            execution_time_ms=now_ms(started_at),
+        )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=validation.errors)
 
+    result = execute_readonly_query(db, validation.normalized_sql)
+    create_query_history(
+        db,
+        current_user=current_user,
+        question="Manual SQL execution",
+        generated_sql=validation.normalized_sql,
+        source="manual_sql",
+        result=result,
+        execution_time_ms=now_ms(started_at),
+    )
     return {
         "sql": validation.normalized_sql,
         "guardrails": _validation_response(validation),
-        "result": execute_readonly_query(db, validation.normalized_sql),
+        "result": result,
     }
 
 
@@ -200,6 +264,7 @@ async def ask(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    started_at = perf_counter()
     max_rows = min(data.max_rows or settings.sql_default_limit, settings.sql_max_limit)
 
     # 1) First try reusable templates from goodprompts.txt.
@@ -228,22 +293,35 @@ async def ask(
         validation = validate_sql_against_database(db, raw_sql, limit=max_rows)
 
     if not validation.is_valid or not validation.normalized_sql:
+        error_message = "; ".join(validation.errors)
         log = QueryLog(
             user_id=current_user.id,
             question=data.question,
             generated_sql=raw_sql,
             status="blocked",
-            error_message="; ".join(validation.errors),
+            error_message=error_message,
             confidence=generated.get("confidence"),
         )
         db.add(log)
         db.commit()
+        create_query_history(
+            db,
+            current_user=current_user,
+            question=data.question,
+            generated_sql=raw_sql,
+            source="llm",
+            status="blocked",
+            error_message=error_message,
+            confidence=generated.get("confidence"),
+            execution_time_ms=now_ms(started_at),
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"errors": validation.errors, "sql": raw_sql},
         )
 
     result = execute_readonly_query(db, validation.normalized_sql)
+    execution_time_ms = now_ms(started_at)
 
     log = QueryLog(
         user_id=current_user.id,
@@ -254,6 +332,16 @@ async def ask(
     )
     db.add(log)
     db.commit()
+    create_query_history(
+        db,
+        current_user=current_user,
+        question=data.question,
+        generated_sql=validation.normalized_sql,
+        source="llm",
+        result=result,
+        confidence=generated.get("confidence"),
+        execution_time_ms=execution_time_ms,
+    )
 
     return AskResponse(
         question=data.question,
