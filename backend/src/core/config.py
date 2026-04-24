@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     train_csv_path: str = "/data/train.csv"
     train_notes_path: str = "/data/notes.md"
     good_prompts_path: str = "/data/goodprompts.txt"
+    semantic_layer_path: str = "/app/src/semantic/semantic_layer.json"
     import_train_on_startup: bool = True
 
     sql_default_limit: int = 100

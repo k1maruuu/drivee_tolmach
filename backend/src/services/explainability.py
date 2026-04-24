@@ -2,6 +2,7 @@ import re
 from typing import Any
 
 from src.services.dataset_loader import TRAIN_COLUMNS
+from src.services.semantic_layer import describe_columns_ru, detect_metric_from_semantic
 
 
 _STATUS_LABELS = {
@@ -112,6 +113,10 @@ def _detect_used_columns(sql: str) -> list[str]:
 def _detect_metric(question: str, sql: str) -> str:
     q = question.lower().replace("ё", "е")
     s = sql.lower()
+
+    semantic_metric = detect_metric_from_semantic(question, sql)
+    if semantic_metric:
+        return semantic_metric
 
     if "order by price_order_local desc" in s or "сам" in q and "дорог" in q:
         return "Самые дорогие заказы по итоговой стоимости price_order_local"
@@ -245,6 +250,9 @@ def _build_explanation_ru(
         lines.append(f"Ограничение результата: LIMIT {limit}.")
     if used_columns:
         lines.append("Использованные колонки: " + ", ".join(used_columns) + ".")
+        column_descriptions = describe_columns_ru(used_columns)[:6]
+        if column_descriptions:
+            lines.append("Смысл колонок: " + "; ".join(column_descriptions) + ".")
     lines.append(
         "Источник SQL: готовый шаблон без вызова ИИ." if source.startswith("template") else "Источник SQL: генерация через LLM/Ollama после проверки шаблонов."
     )

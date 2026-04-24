@@ -8,8 +8,8 @@ from typing import Any
 from src.core.config import settings
 from src.services.redis_cache import get_json, set_json
 
-TEMPLATES_CACHE_KEY = "drivee:templates:v4:list"
-TEMPLATE_MATCH_CACHE_PREFIX = "drivee:template_match:v4:"
+TEMPLATES_CACHE_KEY = "drivee:templates:v5:list"
+TEMPLATE_MATCH_CACHE_PREFIX = "drivee:template_match:v5:"
 
 
 @dataclass(frozen=True)
@@ -145,7 +145,7 @@ def get_template(template_id: str) -> dict[str, Any] | None:
 def result_cache_key(template_id: str, sql: str, params: dict[str, Any], max_rows: int) -> str:
     payload = f"{template_id}|{sql}|{params}|{max_rows}"
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    return f"drivee:template_result:v4:{digest}"
+    return f"drivee:template_result:v5:{digest}"
 
 
 def _normalize_question(text: str) -> str:

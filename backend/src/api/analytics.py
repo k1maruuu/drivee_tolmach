@@ -19,6 +19,7 @@ from src.services.ollama_client import generate_sql
 from src.services.query_executor import execute_readonly_query
 from src.services.redis_cache import get_json, set_json
 from src.services.sql_guard import validate_sql_against_database
+from src.services.semantic_layer import load_semantic_layer, semantic_columns_for_schema, semantic_metrics_for_schema, semantic_synonyms_for_schema
 from src.services.template_params import resolve_template_params
 from src.services.template_service import find_matching_template, result_cache_key
 from src.services.visualization import build_visualization_config
@@ -306,20 +307,21 @@ def schema(current_user: User = Depends(get_current_user)):
             "sql_block_cross_join": settings.sql_block_cross_join,
             "sql_readonly_transaction": settings.sql_readonly_transaction,
         },
-        "semantic_notes": {
-            "orders": "COUNT(DISTINCT order_id) for business order count; raw rows are order_id + tender_id combinations",
-            "order_identifier": "order_id",
-            "tender_identifier": "tender_id",
-            "done_trips": "status_order = 'done'",
-            "client_cancellations": "clientcancel_timestamp IS NOT NULL",
-            "driver_cancellations": "drivercancel_timestamp IS NOT NULL",
-            "price": "price_order_local",
-            "date": "order_timestamp",
-            "city": "city_id",
-            "distance": "distance_in_meters",
-            "duration": "duration_in_seconds",
+        "semantic_layer": {
+            "version": load_semantic_layer().get("version"),
+            "grain": load_semantic_layer().get("grain"),
+            "columns": semantic_columns_for_schema(),
+            "metrics": semantic_metrics_for_schema(),
+            "synonyms": semantic_synonyms_for_schema(),
+            "sql_rules_ru": load_semantic_layer().get("sql_rules_ru", []),
         },
     }
+
+
+@router.get("/semantic-layer")
+def get_semantic_layer(current_user: User = Depends(get_current_user)):
+    """Return active business dictionary used by templates, prompt and explainability."""
+    return load_semantic_layer()
 
 
 @router.post("/sql/validate", response_model=SqlValidationResponse)

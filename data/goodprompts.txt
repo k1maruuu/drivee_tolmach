@@ -247,6 +247,22 @@ WHERE status_order = 'done'
 GROUP BY driver_id
 ORDER BY done_orders DESC
 LIMIT 10;
+"Топ 10 водителей по заказам" ->
+SELECT driver_id, COUNT(DISTINCT order_id) AS orders_count
+FROM train
+WHERE driver_id IS NOT NULL
+GROUP BY driver_id
+ORDER BY orders_count DESC
+LIMIT 10;
+
+"Топ водителей по заказам" ->
+SELECT driver_id, COUNT(DISTINCT order_id) AS orders_count
+FROM train
+WHERE driver_id IS NOT NULL
+GROUP BY driver_id
+ORDER BY orders_count DESC
+LIMIT 10;
+
 
 "У каких водителей больше всего отмен?" ->
 SELECT driver_id, COUNT(DISTINCT order_id) AS canceled_orders

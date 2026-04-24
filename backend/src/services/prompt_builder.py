@@ -1,4 +1,5 @@
 from src.services.dataset_loader import get_train_schema_for_prompt, read_train_notes
+from src.services.semantic_layer import enrich_question_with_semantics, semantic_layer_for_prompt
 
 EXAMPLES = """
 Примеры правильных SQL:
@@ -14,6 +15,12 @@ EXAMPLES = """
 
 Пользователь: Покажи поездки и отмены по городам за вчера
 Ответ SQL: SELECT city_id, COUNT(DISTINCT order_id) FILTER (WHERE status_order = 'done') AS done_orders, COUNT(DISTINCT order_id) FILTER (WHERE status_order = 'cancel') AS cancelled_orders FROM train WHERE order_timestamp >= CURRENT_DATE - INTERVAL '1 day' AND order_timestamp < CURRENT_DATE GROUP BY city_id ORDER BY done_orders DESC LIMIT 100;
+
+Пользователь: Топ 10 водителей по заказам
+Ответ SQL: SELECT driver_id, COUNT(DISTINCT order_id) AS orders_count FROM train WHERE driver_id IS NOT NULL GROUP BY driver_id ORDER BY orders_count DESC LIMIT 10;
+
+Пользователь: Кто из водителей выполнил больше всего заказов?
+Ответ SQL: SELECT driver_id, COUNT(DISTINCT order_id) AS done_orders FROM train WHERE driver_id IS NOT NULL AND status_order = 'done' GROUP BY driver_id ORDER BY done_orders DESC LIMIT 10;
 """.strip()
 
 
@@ -27,6 +34,9 @@ def build_sql_prompt(question: str, max_rows: int, validation_feedback: str | No
 Исправь запрос, учитывая эту ошибку:
 {validation_feedback}
 """.rstrip()
+
+    semantic_context = semantic_layer_for_prompt()
+    enriched_question = enrich_question_with_semantics(question)
 
     return f"""
 Ты backend-модуль NL2SQL для PostgreSQL.
@@ -49,29 +59,21 @@ JSON формат: {{"sql":"...", "confidence":0.0, "notes":"..."}}
 11. Если нужен год, используй полуинтервал: >= TIMESTAMP 'YYYY-01-01' AND < TIMESTAMP 'YYYY+1-01-01'.
 12. Если считаешь количество заказов, обычно используй COUNT(DISTINCT order_id), потому что одна строка — это комбинация order_id и tender_id.
 13. Если вопрос неоднозначный, выбери самое безопасное толкование и напиши это в notes.
-14. Ты не видишь строки train.csv и не должен придумывать данные. Ты генерируешь только SQL по схеме и notes.md, а backend выполнит SQL в PostgreSQL.
+14. Если пользователь просит топ/рейтинг/список водителей по заказам, обязательно добавляй WHERE driver_id IS NOT NULL. NULL driver_id — это не водитель, а отсутствие назначенного водителя.
+15. Если пользователь просит выполненные заказы водителей, добавляй WHERE driver_id IS NOT NULL AND status_order = 'done'.
+16. Ты не видишь строки train.csv и не должен придумывать данные. Ты генерируешь только SQL по схеме, semantic_layer.json и notes.md, а backend выполнит SQL в PostgreSQL.
 
 Фактическая схема таблицы train:
 {get_train_schema_for_prompt()}
 
+Активный семантический слой JSON:
+{semantic_context or 'semantic_layer.json не найден'}
+
 Справочник notes.md для понимания смысла колонок:
 {notes or 'notes.md не найден'}
 
-Бизнес-термины:
-- заказы = DISTINCT order_id или строки train, если пользователь явно просит строки
-- тендеры / подбор водителя = tender_id и status_tender
-- выполненные поездки = status_order = 'done'
-- отмены клиента = clientcancel_timestamp IS NOT NULL
-- отмены водителя = drivercancel_timestamp IS NOT NULL
-- итоговая стоимость / цена заказа = price_order_local
-- стартовая стоимость = price_start_local
-- стоимость на этапе тендера = price_tender_local
-- дата заказа = order_timestamp
-- город = city_id
-- длительность = duration_in_seconds
-- расстояние = distance_in_meters
-
 {EXAMPLES}{feedback_block}
 
-Вопрос пользователя: {question}
+Вопрос пользователя и найденные семантические подсказки:
+{enriched_question}
 """.strip()

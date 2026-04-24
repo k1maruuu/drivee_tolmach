@@ -607,3 +607,26 @@ DEFAULT_REPORT_SCHEDULE_TIMEZONE=UTC
 ```
 
 Для Railway важно: автоматический запуск работает пока запущен backend-процесс. Если сервис спит/выключен, расписания не выполняются до следующего запуска backend.
+
+## Semantic layer / семантический слой
+
+В проект добавлен активный семантический слой:
+
+```text
+backend/src/semantic/semantic_layer.json
+```
+
+Он описывает бизнес-значения колонок, метрики, синонимы и SQL-правила. Backend использует его в трёх местах:
+
+1. Перед вызовом Ollama: в prompt передаются схема таблицы, `notes.md` и `semantic_layer.json`.
+2. До вызова Ollama: вопрос пользователя дополняется найденными подсказками, например `отмены -> status_order = 'cancel'`.
+3. После выполнения SQL: `interpretation.explanation_ru` добавляет смысл использованных колонок.
+
+Проверить активный слой можно через Swagger:
+
+```text
+GET /api/analytics/semantic-layer
+GET /api/analytics/schema
+```
+
+Важно: Ollama не получает весь `train.csv`. Данные лежат в PostgreSQL, а LLM получает только структуру таблицы, `notes.md` и semantic layer, чтобы сгенерировать SQL.
