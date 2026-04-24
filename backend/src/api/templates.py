@@ -14,6 +14,7 @@ from src.services.history_service import create_query_history, now_ms
 from src.services.query_executor import execute_readonly_query
 from src.services.redis_cache import get_json, set_json
 from src.services.sql_guard import validate_sql_against_database
+from src.services.template_params import resolve_template_params
 from src.services.template_service import get_template, load_templates, result_cache_key
 from src.services.visualization import build_visualization_config
 
@@ -62,7 +63,12 @@ def execute_query_template(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
 
     required_params = set(template.get("params", []))
-    provided_params = data.params or {}
+    provided_params = resolve_template_params(
+        db,
+        question=str(template.get("question", "")),
+        required_params=required_params,
+        provided_params=data.params or {},
+    )
     missing_params = sorted(required_params - set(provided_params))
     if missing_params:
         raise HTTPException(

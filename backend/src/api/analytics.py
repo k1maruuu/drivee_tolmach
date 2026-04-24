@@ -16,6 +16,7 @@ from src.services.ollama_client import generate_sql
 from src.services.query_executor import execute_readonly_query
 from src.services.redis_cache import get_json, set_json
 from src.services.sql_guard import validate_sql_against_database
+from src.services.template_params import resolve_template_params
 from src.services.template_service import find_matching_template, result_cache_key
 from src.services.visualization import build_visualization_config
 
@@ -318,14 +319,25 @@ async def ask(
     # If a template is matched, we execute its SQL directly and do NOT call Ollama.
     matched_template = find_matching_template(data.question)
     if matched_template:
-        return _execute_matched_template(
-            template=matched_template,
+        template_params = resolve_template_params(
+            db,
             question=data.question,
-            max_rows=max_rows,
-            params=data.template_params or {},
-            db=db,
-            current_user=current_user,
+            required_params=matched_template.get("params", []),
+            provided_params=data.template_params or {},
         )
+        missing_params = _missing_template_params(matched_template, template_params)
+        if not missing_params:
+            return _execute_matched_template(
+                template=matched_template,
+                question=data.question,
+                max_rows=max_rows,
+                params=template_params,
+                db=db,
+                current_user=current_user,
+            )
+        # If a parameterized template matched but the user did not provide a
+        # concrete period and we could not infer one, do not return 400 from
+        # /analytics/ask. Fallback to Ollama instead.
 
     # 2) Fallback to Ollama only when there is no suitable template.
     generated = await generate_sql(data.question, max_rows=max_rows)

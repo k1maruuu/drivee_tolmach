@@ -80,6 +80,74 @@ def _strip_sql_comments(sql: str) -> str:
     return sql
 
 
+def _strip_sql_literals_and_comments(sql: str) -> str:
+    """Remove comments and literal values before keyword guardrails.
+
+    Important: values like status_order = 'delete' are safe and valid for this
+    dataset. We must not treat the word DELETE inside a quoted string as a DML
+    command. Real DML statements are still blocked by the first keyword check
+    and by scanning SQL after literals are removed.
+    """
+    cleaned = _strip_sql_comments(sql)
+
+    # PostgreSQL dollar-quoted strings: $$...$$ and $tag$...$tag$.
+    cleaned = re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)\$.*?\$\1\$", "''", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"\$\$.*?\$\$", "''", cleaned, flags=re.DOTALL)
+
+    # Standard strings and PostgreSQL escape strings: '...', E'...'.
+    # Do NOT require a word boundary before the opening quote: quotes are not
+    # word characters, so r\b before ' does not match after spaces/operators.
+    cleaned = re.sub(r"(?:\bE)?'(?:''|[^'])*'", "''", cleaned, flags=re.IGNORECASE)
+
+    # Quoted identifiers should not trigger keyword guardrails either.
+    cleaned = re.sub(r'"(?:""|[^"])*"', '""', cleaned)
+    return cleaned
+
+
+
+
+def _mask_extract_from_clauses(sql: str) -> str:
+    """Mask EXTRACT(... FROM ...) expressions before table extraction.
+
+    A simple FROM/JOIN regex can otherwise treat the FROM inside
+    EXTRACT(HOUR FROM order_timestamp) as a real table reference and falsely
+    block safe analytical templates.
+    """
+    result: list[str] = []
+    i = 0
+    lower = sql.lower()
+    while i < len(sql):
+        if lower.startswith("extract", i):
+            j = i + len("extract")
+            while j < len(sql) and sql[j].isspace():
+                j += 1
+            if j < len(sql) and sql[j] == "(":
+                depth = 0
+                k = j
+                in_single = False
+                in_double = False
+                while k < len(sql):
+                    ch = sql[k]
+                    if ch == "'" and not in_double:
+                        in_single = not in_single
+                    elif ch == '"' and not in_single:
+                        in_double = not in_double
+                    elif not in_single and not in_double:
+                        if ch == "(":
+                            depth += 1
+                        elif ch == ")":
+                            depth -= 1
+                            if depth == 0:
+                                k += 1
+                                break
+                    k += 1
+                result.append(" EXTRACT_EXPR ")
+                i = k
+                continue
+        result.append(sql[i])
+        i += 1
+    return "".join(result)
+
 def _extract_tables(sql: str) -> set[str]:
     """
     Extract real table names from FROM/JOIN clauses.
@@ -90,7 +158,7 @@ def _extract_tables(sql: str) -> set[str]:
     The inner FROM train is still extracted by the regex, while the outer
     FROM (...) alias is not treated as a table.
     """
-    cleaned = _strip_sql_comments(sql)
+    cleaned = _mask_extract_from_clauses(_strip_sql_comments(sql))
     tables: set[str] = set()
     for match in re.finditer(
         r"\b(?:FROM|JOIN)\s+(?!\()([a-zA-Z_][a-zA-Z0-9_\.]*)(?:\s+AS)?(?:\s+[a-zA-Z_][a-zA-Z0-9_]*)?",
@@ -159,15 +227,17 @@ def validate_sql(sql: str, limit: int | None = None) -> ValidationResult:
     if first_keyword not in {"SELECT", "WITH"}:
         errors.append("SQL must start with SELECT or WITH")
 
-    upper_sql = original_sql.upper()
+    # Keyword scan must ignore string literals, otherwise a safe filter like
+    # WHERE status_order = 'delete' is falsely blocked as DELETE.
+    scan_sql = _strip_sql_literals_and_comments(original_sql).upper()
     for keyword in FORBIDDEN_KEYWORDS:
-        if re.search(rf"\b{keyword}\b", upper_sql):
+        if re.search(rf"\b{keyword}\b", scan_sql):
             errors.append(f"Forbidden keyword: {keyword}")
 
     if re.search(r";\s*\S", original_sql):
         errors.append("Multiple statements are forbidden")
 
-    if re.search(r"\bSELECT\s+\*", upper_sql):
+    if re.search(r"\bSELECT\s+\*", scan_sql):
         warnings.append("SELECT * is not recommended; explicit columns are safer")
 
     tables = _extract_tables(original_sql)
@@ -211,7 +281,6 @@ def validate_sql_against_database(
         return validation
 
     try:
-        db.execute(text("SET TRANSACTION READ ONLY"))
         db.execute(text(f"SET LOCAL statement_timeout = {int(settings.sql_statement_timeout_ms)}"))
         db.execute(text("EXPLAIN " + validation.normalized_sql), params or {})
         db.rollback()

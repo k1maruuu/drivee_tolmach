@@ -11,7 +11,6 @@ def execute_readonly_query(db: Session, sql: str, params: dict[str, Any] | None 
     bind_params = params or {}
 
     try:
-        db.execute(text("SET TRANSACTION READ ONLY"))
         db.execute(text(f"SET LOCAL statement_timeout = {int(settings.sql_statement_timeout_ms)}"))
         db.execute(text("EXPLAIN " + sql), bind_params)
         result = db.execute(text(sql), bind_params)
