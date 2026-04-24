@@ -9,6 +9,7 @@ from src.db.session import get_db
 from src.models.user import User
 from src.schemas.analytics import SqlValidationResponse
 from src.schemas.templates import QueryTemplateRead, TemplateExecuteRequest, TemplateExecuteResponse
+from src.services.audit_service import create_query_audit_log
 from src.services.explainability import build_query_interpretation
 from src.services.history_service import create_query_history, now_ms
 from src.services.query_executor import execute_readonly_query
@@ -114,6 +115,22 @@ def execute_query_template(
             confidence=1.0,
             execution_time_ms=now_ms(started_at),
         )
+        create_query_audit_log(
+            db,
+            current_user=current_user,
+            action="template_execute",
+            source="template_cache",
+            status="cache",
+            question=str(template["question"]),
+            sql=cached_sql,
+            normalized_sql=cached_sql,
+            template_id=template_id,
+            template_title=str(template["title"]),
+            confidence=1.0,
+            row_count=(cached.get("result") or {}).get("row_count"),
+            execution_time_ms=now_ms(started_at),
+            extra={"cache_hit": True},
+        )
         return cached
 
     validation = validate_sql_against_database(db, sql, limit=max_rows, params=provided_params)
@@ -128,6 +145,21 @@ def execute_query_template(
             template_title=str(template["title"]),
             status="blocked",
             error_message="; ".join(validation.errors),
+            confidence=1.0,
+            execution_time_ms=now_ms(started_at),
+        )
+        create_query_audit_log(
+            db,
+            current_user=current_user,
+            action="template_execute",
+            source="template",
+            status="blocked",
+            question=str(template["question"]),
+            sql=sql,
+            validation=validation,
+            template_id=template_id,
+            template_title=str(template["title"]),
+            blocked_reason="; ".join(validation.errors),
             confidence=1.0,
             execution_time_ms=now_ms(started_at),
         )
@@ -172,6 +204,21 @@ def execute_query_template(
         template_title=str(template["title"]),
         result=result,
         confidence=1.0,
+        execution_time_ms=now_ms(started_at),
+    )
+    create_query_audit_log(
+        db,
+        current_user=current_user,
+        action="template_execute",
+        source="template",
+        status="ok",
+        question=str(template["question"]),
+        sql=sql,
+        validation=validation,
+        template_id=template_id,
+        template_title=str(template["title"]),
+        confidence=1.0,
+        row_count=result.get("row_count"),
         execution_time_ms=now_ms(started_at),
     )
     return response

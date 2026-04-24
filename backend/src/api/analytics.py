@@ -9,6 +9,7 @@ from src.db.session import get_db
 from src.models.query_log import QueryLog
 from src.models.user import User
 from src.schemas.analytics import AskRequest, AskResponse, SqlRequest, SqlValidationResponse
+from src.services.audit_service import create_query_audit_log
 from src.services.clarification import analyze_question_for_clarification
 from src.services.confidence import build_confidence
 from src.services.dataset_loader import TRAIN_COLUMNS, TRAIN_COLUMN_DESCRIPTIONS, read_train_notes
@@ -119,6 +120,22 @@ def _execute_matched_template(
                 confidence=confidence.value,
                 execution_time_ms=now_ms(started_at),
             )
+            create_query_audit_log(
+                db,
+                current_user=current_user,
+                action="ask",
+                source="template_cache",
+                status="cache",
+                question=question,
+                sql=cached_sql,
+                normalized_sql=cached_sql,
+                template_id=str(template.get("id")),
+                template_title=str(template.get("title")),
+                confidence=confidence.value,
+                row_count=(cached_result or {}).get("row_count"),
+                execution_time_ms=now_ms(started_at),
+                extra={"cache_hit": True, "template_match_score": (template.get("match") or {}).get("score")},
+            )
             return AskResponse(
                 question=question,
                 sql=cached_sql,
@@ -159,6 +176,21 @@ def _execute_matched_template(
             template_title=str(template.get("title")),
             status="blocked",
             error_message=error_message,
+            confidence=0.0,
+            execution_time_ms=now_ms(started_at),
+        )
+        create_query_audit_log(
+            db,
+            current_user=current_user,
+            action="ask",
+            source="template",
+            status="blocked",
+            question=question,
+            sql=sql,
+            validation=validation,
+            template_id=str(template.get("id")),
+            template_title=str(template.get("title")),
+            blocked_reason=error_message,
             confidence=0.0,
             execution_time_ms=now_ms(started_at),
         )
@@ -220,6 +252,22 @@ def _execute_matched_template(
         confidence=confidence.value,
         execution_time_ms=execution_time_ms,
     )
+    create_query_audit_log(
+        db,
+        current_user=current_user,
+        action="ask",
+        source="template",
+        status="ok",
+        question=question,
+        sql=sql,
+        validation=validation,
+        template_id=str(template.get("id")),
+        template_title=str(template.get("title")),
+        confidence=confidence.value,
+        row_count=result.get("row_count"),
+        execution_time_ms=execution_time_ms,
+        extra={"template_match_score": (template.get("match") or {}).get("score")},
+    )
 
     return AskResponse(
         question=question,
@@ -270,7 +318,20 @@ def validate_sql_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    started_at = perf_counter()
     validation = validate_sql_against_database(db, data.sql, limit=data.max_rows)
+    create_query_audit_log(
+        db,
+        current_user=current_user,
+        action="validate",
+        source="manual_sql",
+        status="ok" if validation.is_valid else "blocked",
+        question="Manual SQL validation",
+        sql=data.sql,
+        validation=validation,
+        blocked_reason="; ".join(validation.errors) if validation.errors else None,
+        execution_time_ms=now_ms(started_at),
+    )
     return _validation_response(validation)
 
 
@@ -291,6 +352,18 @@ def execute_sql_endpoint(
             source="manual_sql",
             status="blocked",
             error_message="; ".join(validation.errors),
+            execution_time_ms=now_ms(started_at),
+        )
+        create_query_audit_log(
+            db,
+            current_user=current_user,
+            action="execute",
+            source="manual_sql",
+            status="blocked",
+            question="Manual SQL execution",
+            sql=data.sql,
+            validation=validation,
+            blocked_reason="; ".join(validation.errors),
             execution_time_ms=now_ms(started_at),
         )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=validation.errors)
@@ -322,6 +395,19 @@ def execute_sql_endpoint(
         source="manual_sql",
         result=result,
         confidence=confidence.value,
+        execution_time_ms=now_ms(started_at),
+    )
+    create_query_audit_log(
+        db,
+        current_user=current_user,
+        action="execute",
+        source="manual_sql",
+        status="ok",
+        question="Manual SQL execution",
+        sql=data.sql,
+        validation=validation,
+        confidence=confidence.value,
+        row_count=result.get("row_count"),
         execution_time_ms=now_ms(started_at),
     )
     return {
@@ -394,6 +480,20 @@ async def ask(
             confidence=confidence.value,
             execution_time_ms=now_ms(started_at),
         )
+        create_query_audit_log(
+            db,
+            current_user=current_user,
+            action="ask",
+            source="clarification",
+            status="clarification",
+            question=data.question,
+            sql="",
+            normalized_sql="",
+            blocked_reason=clarification.reason,
+            confidence=confidence.value,
+            execution_time_ms=now_ms(started_at),
+            extra={"clarification": clarification.to_payload()},
+        )
         return AskResponse(
             question=data.question,
             sql="",
@@ -461,6 +561,20 @@ async def ask(
             confidence=confidence.value,
             execution_time_ms=now_ms(started_at),
         )
+        create_query_audit_log(
+            db,
+            current_user=current_user,
+            action="ask",
+            source="llm",
+            status="blocked",
+            question=data.question,
+            sql=raw_sql,
+            validation=validation,
+            blocked_reason=error_message,
+            confidence=confidence.value,
+            execution_time_ms=now_ms(started_at),
+            extra={"repaired": repaired},
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"errors": validation.errors, "sql": raw_sql, "confidence": confidence.value, "confidence_reason": confidence.reason},
@@ -507,6 +621,20 @@ async def ask(
         result=result,
         confidence=confidence.value,
         execution_time_ms=execution_time_ms,
+    )
+    create_query_audit_log(
+        db,
+        current_user=current_user,
+        action="ask",
+        source="llm",
+        status="ok",
+        question=data.question,
+        sql=raw_sql,
+        validation=validation,
+        confidence=confidence.value,
+        row_count=result.get("row_count"),
+        execution_time_ms=execution_time_ms,
+        extra={"repaired": repaired, "llm_confidence": generated.get("confidence")},
     )
 
     return AskResponse(
