@@ -551,3 +551,59 @@ SELECT COUNT(*) FROM train a CROSS JOIN train b;
 SELECT order_id FROM train ORDER BY random();
 SELECT order_id FROM train OFFSET 100000 LIMIT 10;
 ```
+
+## Шаг 7: расписание сохраненных отчетов
+
+Теперь сохраненные отчеты можно запускать по расписанию без нового запроса к LLM.
+Расписание использует уже сохраненный SQL отчета, каждый запуск заново проходит guardrails/EXPLAIN и выполняется только как readonly SELECT.
+
+### Endpoints
+
+```text
+GET    /api/report-schedules
+POST   /api/report-schedules
+GET    /api/report-schedules/{schedule_id}
+PATCH  /api/report-schedules/{schedule_id}
+POST   /api/report-schedules/{schedule_id}/run-now
+DELETE /api/report-schedules/{schedule_id}
+POST   /api/report-schedules/run-due        # admin/manual trigger
+```
+
+### Пример создания расписания
+
+```json
+{
+  "report_id": 1,
+  "frequency": "weekly",
+  "timezone": "Asia/Yakutsk",
+  "day_of_week": 0,
+  "hour": 9,
+  "minute": 0,
+  "default_max_rows": 100,
+  "params": {},
+  "is_enabled": true
+}
+```
+
+`day_of_week`: понедельник = 0, воскресенье = 6.
+Для `frequency = "daily"` день недели не нужен.
+Для `frequency = "monthly"` используй `day_of_month` от 1 до 31.
+
+### Как это работает
+
+1. Пользователь сохраняет отчет через `POST /api/reports/save`.
+2. Фронт создает расписание через `POST /api/report-schedules`.
+3. Backend раз в `REPORT_SCHEDULER_INTERVAL_SECONDS` проверяет `report_schedules.next_run_at`.
+4. Если расписание наступило, backend выполняет сохраненный SQL.
+5. Результат сохраняется в `report_schedules.last_result_preview`, `saved_reports.last_result_preview`, `query_history` и `query_audit_logs`.
+
+### Настройки
+
+```env
+REPORT_SCHEDULER_ENABLED=true
+REPORT_SCHEDULER_INTERVAL_SECONDS=60
+REPORT_SCHEDULER_BATCH_SIZE=10
+DEFAULT_REPORT_SCHEDULE_TIMEZONE=UTC
+```
+
+Для Railway важно: автоматический запуск работает пока запущен backend-процесс. Если сервис спит/выключен, расписания не выполняются до следующего запуска backend.

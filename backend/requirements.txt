@@ -13,3 +13,4 @@ python-multipart==0.0.20
 httpx==0.28.1
 sqlparse==0.5.3
 redis==5.0.8
+tzdata==2025.2

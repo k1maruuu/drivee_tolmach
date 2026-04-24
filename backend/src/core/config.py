@@ -48,11 +48,16 @@ class Settings(BaseSettings):
     template_result_cache_ttl_seconds: int = 60 * 10
     template_match_threshold: float = 0.88
 
+    report_scheduler_enabled: bool = True
+    report_scheduler_interval_seconds: int = 60
+    report_scheduler_batch_size: int = 10
+    default_report_schedule_timezone: str = "UTC"
+
     @property
     def cors_origins(self) -> List[str]:
         return [origin.strip() for origin in self.backend_cors_origins.split(",") if origin.strip()]
 
-    @field_validator("sql_default_limit", "sql_max_limit", "sql_statement_timeout_ms", "sql_max_offset", "sql_max_train_references", "sql_max_explain_plan_rows")
+    @field_validator("sql_default_limit", "sql_max_limit", "sql_statement_timeout_ms", "sql_max_offset", "sql_max_train_references", "sql_max_explain_plan_rows", "report_scheduler_interval_seconds", "report_scheduler_batch_size")
     @classmethod
     def positive_limit(cls, value: int) -> int:
         if value <= 0:
