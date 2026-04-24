@@ -31,6 +31,20 @@ class QueryResult(BaseModel):
     row_count: int
 
 
+class QueryInterpretation(BaseModel):
+    metric: str | None = None
+    date_filter: str | None = None
+    filters: list[str] = Field(default_factory=list)
+    group_by: list[str] = Field(default_factory=list)
+    sort: str | None = None
+    limit: int | None = None
+    used_columns: list[str] = Field(default_factory=list)
+    selected_expressions: list[str] = Field(default_factory=list)
+    row_logic: str | None = None
+    result_shape: str | None = None
+    explanation_ru: list[str] = Field(default_factory=list)
+
+
 class AskResponse(BaseModel):
     question: str
     sql: str
@@ -38,6 +52,7 @@ class AskResponse(BaseModel):
     notes: str | None = None
     result: QueryResult
     guardrails: SqlValidationResponse
+    interpretation: QueryInterpretation | None = None
     source: str = "llm"
     template_id: str | None = None
     template_title: str | None = None

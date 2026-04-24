@@ -340,3 +340,39 @@ POST /api/reports/{report_id}/execute
 ```http
 DELETE /api/reports/{report_id}
 ```
+
+## Step 2: Explainability / interpretation
+
+`POST /api/analytics/ask` now returns an `interpretation` block. It explains how backend understood the request and the generated SQL:
+
+```json
+{
+  "interpretation": {
+    "metric": "Самые дорогие заказы по итоговой стоимости price_order_local",
+    "date_filter": "order_timestamp от 2026-01-01 включительно до 2027-01-01 не включительно",
+    "filters": [],
+    "group_by": [],
+    "sort": "price_order_local DESC NULLS LAST",
+    "limit": 100,
+    "used_columns": ["order_id", "price_order_local", "order_timestamp"],
+    "selected_expressions": ["order_id", "price_order_local"],
+    "row_logic": "Возвращает строки из train после фильтрации и сортировки.",
+    "result_shape": "table",
+    "explanation_ru": [
+      "Метрика/смысл запроса: Самые дорогие заказы по итоговой стоимости price_order_local.",
+      "Период: order_timestamp от 2026-01-01 включительно до 2027-01-01 не включительно.",
+      "Сортировка: price_order_local DESC NULLS LAST.",
+      "Ограничение результата: LIMIT 100.",
+      "Перед выполнением SQL прошёл guardrails и PostgreSQL EXPLAIN-проверку."
+    ]
+  }
+}
+```
+
+The same interpretation is also returned by:
+
+- `POST /api/templates/{template_id}/execute`
+- `POST /api/reports/{report_id}/execute`
+- `POST /api/analytics/sql/execute`
+
+Use this block on frontend as a "Система поняла запрос так" panel.

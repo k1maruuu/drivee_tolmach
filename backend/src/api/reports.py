@@ -17,6 +17,7 @@ from src.schemas.reports import (
     SaveReportRequest,
     SavedReportRead,
 )
+from src.services.explainability import build_query_interpretation
 from src.services.history_service import build_result_preview, create_query_history
 from src.services.query_executor import execute_readonly_query
 from src.services.sql_guard import validate_sql_against_database
@@ -204,6 +205,12 @@ def execute_saved_report(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"errors": validation.errors, "sql": report.sql})
 
     result = execute_readonly_query(db, validation.normalized_sql, params=params)
+    interpretation = build_query_interpretation(
+        question=report.question,
+        sql=validation.normalized_sql,
+        source="saved_report",
+        result=result,
+    )
     report.last_result_preview = build_result_preview(result)
     report.last_row_count = result.get("row_count")
     report.last_run_at = datetime.now(timezone.utc)
@@ -229,6 +236,7 @@ def execute_saved_report(
         params=params,
         result=result,
         guardrails=_validation_response(validation),
+        interpretation=interpretation,
     )
 
 

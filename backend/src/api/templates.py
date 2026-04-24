@@ -9,6 +9,7 @@ from src.db.session import get_db
 from src.models.user import User
 from src.schemas.analytics import SqlValidationResponse
 from src.schemas.templates import QueryTemplateRead, TemplateExecuteRequest, TemplateExecuteResponse
+from src.services.explainability import build_query_interpretation
 from src.services.history_service import create_query_history, now_ms
 from src.services.query_executor import execute_readonly_query
 from src.services.redis_cache import get_json, set_json
@@ -77,13 +78,21 @@ def execute_query_template(
     cache_key = result_cache_key(template_id, sql, provided_params, max_rows)
 
     cached = get_json(cache_key)
-    if cached is not None:
+    if isinstance(cached, dict):
         cached["cache_hit"] = True
+        cached_sql = str(cached.get("sql", sql))
+        if not cached.get("interpretation") and cached.get("result"):
+            cached["interpretation"] = build_query_interpretation(
+                question=str(template["question"]),
+                sql=cached_sql,
+                source="template_cache",
+                result=cached.get("result"),
+            )
         create_query_history(
             db,
             current_user=current_user,
             question=str(template["question"]),
-            generated_sql=str(cached.get("sql", sql)),
+            generated_sql=cached_sql,
             source="template_cache",
             template_id=template_id,
             template_title=str(template["title"]),
@@ -114,6 +123,12 @@ def execute_query_template(
         )
 
     result = execute_readonly_query(db, validation.normalized_sql, params=provided_params)
+    interpretation = build_query_interpretation(
+        question=str(template["question"]),
+        sql=validation.normalized_sql,
+        source="template",
+        result=result,
+    )
 
     response = {
         "template_id": template_id,
@@ -123,6 +138,7 @@ def execute_query_template(
         "cache_hit": False,
         "result": result,
         "guardrails": _validation_response(validation),
+        "interpretation": interpretation,
     }
     set_json(cache_key, response, settings.template_result_cache_ttl_seconds)
     create_query_history(

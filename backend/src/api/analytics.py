@@ -10,6 +10,7 @@ from src.models.query_log import QueryLog
 from src.models.user import User
 from src.schemas.analytics import AskRequest, AskResponse, SqlRequest, SqlValidationResponse
 from src.services.dataset_loader import TRAIN_COLUMNS, TRAIN_COLUMN_DESCRIPTIONS, read_train_notes
+from src.services.explainability import build_query_interpretation
 from src.services.history_service import create_query_history, now_ms
 from src.services.ollama_client import generate_sql
 from src.services.query_executor import execute_readonly_query
@@ -76,11 +77,18 @@ def _execute_matched_template(
         cached_result = cached.get("result")
         cached_guardrails = cached.get("guardrails")
         if cached_result and cached_guardrails:
+            cached_sql = str(cached.get("sql", sql))
+            interpretation = cached.get("interpretation") or build_query_interpretation(
+                question=question,
+                sql=cached_sql,
+                source="template_cache",
+                result=cached_result,
+            )
             create_query_history(
                 db,
                 current_user=current_user,
                 question=question,
-                generated_sql=str(cached.get("sql", sql)),
+                generated_sql=cached_sql,
                 source="template_cache",
                 template_id=str(template.get("id")),
                 template_title=str(template.get("title")),
@@ -90,11 +98,12 @@ def _execute_matched_template(
             )
             return AskResponse(
                 question=question,
-                sql=str(cached.get("sql", sql)),
+                sql=cached_sql,
                 confidence=1.0,
                 notes="Найден и выполнен готовый шаблон. ИИ/Ollama не вызывалась. Результат взят из Redis cache.",
                 result=cached_result,
                 guardrails=cached_guardrails,
+                interpretation=interpretation,
                 source="template",
                 template_id=str(template.get("id")),
                 template_title=str(template.get("title")),
@@ -135,6 +144,12 @@ def _execute_matched_template(
 
     result = execute_readonly_query(db, validation.normalized_sql, params=params)
     guardrails = _validation_response(validation)
+    interpretation = build_query_interpretation(
+        question=question,
+        sql=validation.normalized_sql,
+        source="template",
+        result=result,
+    )
     execution_time_ms = now_ms(started_at)
 
     response_payload = {
@@ -145,6 +160,7 @@ def _execute_matched_template(
         "cache_hit": False,
         "result": result,
         "guardrails": guardrails,
+        "interpretation": interpretation,
     }
     set_json(cache_key, response_payload, settings.template_result_cache_ttl_seconds)
 
@@ -177,6 +193,7 @@ def _execute_matched_template(
         notes="Найден и выполнен готовый шаблон. ИИ/Ollama не вызывалась.",
         result=result,
         guardrails=guardrails,
+        interpretation=interpretation,
         source="template",
         template_id=str(template.get("id")),
         template_title=str(template.get("title")),
@@ -242,6 +259,12 @@ def execute_sql_endpoint(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=validation.errors)
 
     result = execute_readonly_query(db, validation.normalized_sql)
+    interpretation = build_query_interpretation(
+        question="Manual SQL execution",
+        sql=validation.normalized_sql,
+        source="manual_sql",
+        result=result,
+    )
     create_query_history(
         db,
         current_user=current_user,
@@ -254,6 +277,7 @@ def execute_sql_endpoint(
     return {
         "sql": validation.normalized_sql,
         "guardrails": _validation_response(validation),
+        "interpretation": interpretation,
         "result": result,
     }
 
@@ -321,6 +345,12 @@ async def ask(
         )
 
     result = execute_readonly_query(db, validation.normalized_sql)
+    interpretation = build_query_interpretation(
+        question=data.question,
+        sql=validation.normalized_sql,
+        source="llm",
+        result=result,
+    )
     execution_time_ms = now_ms(started_at)
 
     log = QueryLog(
@@ -350,6 +380,7 @@ async def ask(
         notes=generated.get("notes"),
         result=result,
         guardrails=_validation_response(validation),
+        interpretation=interpretation,
         source="llm",
         cache_hit=False,
     )

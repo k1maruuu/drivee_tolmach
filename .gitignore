@@ -8,5 +8,3 @@ venv/
 .vscode/
 *.log
 .DS_Store
-
-*.csv
