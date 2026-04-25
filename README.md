@@ -224,11 +224,9 @@ data/goodprompts.txt
 
 **Разработчики**
 
-* Голиков Александр
-  [https://github.com/agarogo](https://github.com/agarogo)
+* [Голиков Александр](https://github.com/agarogo)
 
-* Максимов Сергей
-  [https://github.com/Serjosuke](https://github.com/Serjosuke)
+* [Максимов Сергей](https://github.com/Serjosuke)
 
 **Дизайнер**
 
