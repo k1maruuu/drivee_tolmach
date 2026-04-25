@@ -1,0 +1,115 @@
+{
+  "version": "2.0",
+  "main_table": "incity",
+  "tables": {
+    "incity": {
+      "title_ru": "Детальные заказы и тендеры",
+      "grain_ru": "Одна строка = одна комбинация order_id и tender_id. Если tender_id пустой, строка описывает заказ без конкретного тендера.",
+      "primary_date": "order_timestamp",
+      "columns": {
+        "city_id": {"type": "INTEGER", "description_ru": "идентификатор города", "terms": ["город", "города", "по городам"]},
+        "order_id": {"type": "TEXT", "description_ru": "идентификатор заказа; использовать вместо id", "terms": ["заказ", "заказы", "поездка", "поездки", "id заказа"]},
+        "tender_id": {"type": "TEXT", "description_ru": "идентификатор тендера", "terms": ["тендер", "тендеры", "подбор водителя"]},
+        "user_id": {"type": "TEXT", "description_ru": "идентификатор пассажира", "terms": ["пассажир", "пользователь", "клиент"]},
+        "driver_id": {"type": "TEXT", "description_ru": "идентификатор водителя; NULL означает водитель не назначен", "terms": ["водитель", "водители", "драйвер"]},
+        "status_order": {"type": "TEXT", "description_ru": "итоговый статус заказа", "values": {"done": "завершён", "cancel": "отменён", "delete": "удалён"}},
+        "status_tender": {"type": "TEXT", "description_ru": "статус тендера", "values": {"decline": "отклонён", "done": "успешный тендер"}},
+        "order_timestamp": {"type": "TIMESTAMP", "description_ru": "время создания заказа; основное поле даты для заказов"},
+        "tender_timestamp": {"type": "TIMESTAMP", "description_ru": "время создания/начала тендера"},
+        "driveraccept_timestamp": {"type": "TIMESTAMP", "description_ru": "время принятия заказа водителем"},
+        "driverarrived_timestamp": {"type": "TIMESTAMP", "description_ru": "время прибытия водителя"},
+        "driverstarttheride_timestamp": {"type": "TIMESTAMP", "description_ru": "время начала поездки"},
+        "driverdone_timestamp": {"type": "TIMESTAMP", "description_ru": "время завершения поездки"},
+        "clientcancel_timestamp": {"type": "TIMESTAMP", "description_ru": "время отмены пассажиром"},
+        "drivercancel_timestamp": {"type": "TIMESTAMP", "description_ru": "время отмены водителем"},
+        "distance_in_meters": {"type": "INTEGER", "description_ru": "расстояние поездки в метрах"},
+        "duration_in_seconds": {"type": "INTEGER", "description_ru": "длительность поездки или заказа в секундах"},
+        "price_order_local": {"type": "NUMERIC", "description_ru": "итоговая стоимость заказа; основное поле цены/выручки/чека"},
+        "price_tender_local": {"type": "NUMERIC", "description_ru": "стоимость на этапе тендера"},
+        "price_start_local": {"type": "NUMERIC", "description_ru": "стартовая стоимость заказа"}
+      }
+    },
+    "pass_detail": {
+      "title_ru": "Дневные метрики пассажиров",
+      "grain_ru": "Одна строка = один пассажир в одном городе за один день.",
+      "primary_date": "order_date_part",
+      "columns": {
+        "city_id": {"type": "INTEGER", "description_ru": "идентификатор города"},
+        "user_id": {"type": "TEXT", "description_ru": "идентификатор пассажира"},
+        "order_date_part": {"type": "DATE", "description_ru": "дата дневных метрик пассажира"},
+        "user_reg_date": {"type": "DATE", "description_ru": "дата регистрации пассажира"},
+        "orders_count": {"type": "INTEGER", "description_ru": "количество уникальных заказов пассажира за день"},
+        "orders_cnt_with_tenders": {"type": "INTEGER", "description_ru": "количество заказов пассажира с тендерами"},
+        "orders_cnt_accepted": {"type": "INTEGER", "description_ru": "количество заказов пассажира, принятых водителями"},
+        "rides_count": {"type": "INTEGER", "description_ru": "количество завершённых поездок пассажира"},
+        "rides_time_sum_seconds": {"type": "NUMERIC", "description_ru": "суммарная длительность поездок пассажира за день"},
+        "online_time_sum_seconds": {"type": "NUMERIC", "description_ru": "суммарное время онлайн пассажира"},
+        "client_cancel_after_accept": {"type": "INTEGER", "description_ru": "отмены пассажиром после принятия заказа"}
+      }
+    },
+    "driver_detail": {
+      "title_ru": "Дневные метрики водителей",
+      "grain_ru": "Одна строка = один водитель в одном городе за один день.",
+      "primary_date": "tender_date_part",
+      "columns": {
+        "city_id": {"type": "INTEGER", "description_ru": "идентификатор города"},
+        "driver_id": {"type": "TEXT", "description_ru": "идентификатор водителя"},
+        "tender_date_part": {"type": "DATE", "description_ru": "дата дневных метрик водителя"},
+        "driver_reg_date": {"type": "DATE", "description_ru": "дата регистрации водителя"},
+        "orders": {"type": "INTEGER", "description_ru": "количество заказов, связанных с водителем за день"},
+        "orders_cnt_with_tenders": {"type": "INTEGER", "description_ru": "количество заказов с тендерами"},
+        "orders_cnt_accepted": {"type": "INTEGER", "description_ru": "количество принятых заказов"},
+        "rides_count": {"type": "INTEGER", "description_ru": "количество завершённых поездок водителя"},
+        "rides_time_sum_seconds": {"type": "NUMERIC", "description_ru": "суммарная длительность поездок водителя за день"},
+        "online_time_sum_seconds": {"type": "NUMERIC", "description_ru": "суммарное время водителя онлайн"},
+        "client_cancel_after_accept": {"type": "INTEGER", "description_ru": "отмены пассажиром после принятия заказа"}
+      }
+    }
+  },
+  "relations": [
+    {"left": "incity.user_id", "right": "pass_detail.user_id", "description_ru": "связь заказа с дневными метриками пассажира"},
+    {"left": "incity.driver_id", "right": "driver_detail.driver_id", "description_ru": "связь заказа с дневными метриками водителя"},
+    {"left": "DATE(incity.order_timestamp)", "right": "pass_detail.order_date_part", "description_ru": "дневное сопоставление пассажирских метрик"},
+    {"left": "DATE(incity.tender_timestamp)", "right": "driver_detail.tender_date_part", "description_ru": "дневное сопоставление водительских метрик"}
+  ],
+  "metrics": {
+    "total_orders": {"title_ru": "Всего заказов", "table": "incity", "sql": "COUNT(DISTINCT order_id)", "terms": ["сколько заказов", "всего заказов", "количество заказов"]},
+    "done_orders": {"title_ru": "Завершённые заказы", "table": "incity", "sql": "COUNT(DISTINCT order_id) FILTER (WHERE status_order = 'done')", "terms": ["завершенные", "выполненные", "поездки"]},
+    "canceled_orders": {"title_ru": "Отменённые заказы", "table": "incity", "sql": "COUNT(DISTINCT order_id) FILTER (WHERE status_order = 'cancel')", "terms": ["отмены", "отмененные"]},
+    "deleted_orders": {"title_ru": "Удалённые заказы", "table": "incity", "sql": "COUNT(DISTINCT order_id) FILTER (WHERE status_order = 'delete')", "terms": ["удаленные", "удалено"]},
+    "declined_tenders": {"title_ru": "Отклонения тендеров", "table": "incity", "sql": "COUNT(*) FILTER (WHERE status_tender = 'decline')", "terms": ["отклонения", "отказы", "decline"]},
+    "revenue": {"title_ru": "Оборот/выручка", "table": "incity", "sql": "SUM(price_order_local) FILTER (WHERE status_order = 'done')", "terms": ["выручка", "оборот", "сумма заказов"]},
+    "avg_order_price": {"title_ru": "Средний чек", "table": "incity", "sql": "AVG(price_order_local) FILTER (WHERE status_order = 'done')", "terms": ["средний чек", "средняя цена"]},
+    "driver_daily_rides": {"title_ru": "Поездки водителей по дням", "table": "driver_detail", "sql": "SUM(rides_count)", "terms": ["активность водителей", "рейтинги водителей", "водители по дням"]},
+    "passenger_daily_orders": {"title_ru": "Заказы пассажиров по дням", "table": "pass_detail", "sql": "SUM(orders_count)", "terms": ["активность пассажиров", "пассажиры по дням", "заказы пассажиров"]}
+  },
+  "synonyms": {
+    "заказы": "incity.COUNT(DISTINCT order_id)",
+    "поездки": "incity.status_order = 'done' или rides_count в *_detail",
+    "выполненные": "incity.status_order = 'done'",
+    "завершенные": "incity.status_order = 'done'",
+    "отмены": "incity.status_order = 'cancel'",
+    "удаленные": "incity.status_order = 'delete'",
+    "отклонения": "incity.status_tender = 'decline'",
+    "выручка": "incity.SUM(price_order_local) WHERE status_order = 'done'",
+    "средний чек": "incity.AVG(price_order_local) WHERE status_order = 'done'",
+    "водитель": "incity.driver_id или driver_detail.driver_id; для рейтингов исключать NULL",
+    "пассажир": "incity.user_id или pass_detail.user_id",
+    "город": "city_id",
+    "дата заказа": "incity.order_timestamp",
+    "дата пассажирских метрик": "pass_detail.order_date_part",
+    "дата водительских метрик": "driver_detail.tender_date_part"
+  },
+  "sql_rules_ru": [
+    "Старую таблицу train не использовать. Основная детальная таблица теперь incity.",
+    "Для бизнес-подсчёта заказов в incity используй COUNT(DISTINCT order_id).",
+    "Для списка заказов выбирай order_id, tender_id, city_id, status_order, order_timestamp и нужную метрику.",
+    "Для периода по заказам используй incity.order_timestamp и полуинтервалы >= start AND < end.",
+    "Для пассажирских дневных метрик используй pass_detail.order_date_part.",
+    "Для водительских дневных метрик используй driver_detail.tender_date_part.",
+    "Для 'выручки' и 'среднего чека' обычно фильтруй status_order = 'done'.",
+    "Для рейтингов водителей из incity добавляй driver_id IS NOT NULL.",
+    "Не используй id: такой колонки нет. Есть order_id, tender_id, user_id, driver_id.",
+    "Не используй SELECT *. Выбирай только нужные колонки."
+  ]
+}

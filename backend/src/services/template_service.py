@@ -8,8 +8,8 @@ from typing import Any
 from src.core.config import settings
 from src.services.redis_cache import get_json, set_json
 
-TEMPLATES_CACHE_KEY = "drivee:templates:v1:list"
-TEMPLATE_MATCH_CACHE_PREFIX = "drivee:template_match:v1:"
+TEMPLATES_CACHE_KEY = "drivee:templates:v10:multidataset:list"
+TEMPLATE_MATCH_CACHE_PREFIX = "drivee:template_match:v10:multidataset:"
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,10 @@ class QueryTemplate:
 
 def _normalize_template_sql(sql: str) -> str:
     sql = sql.strip().rstrip(";")
-    sql = re.sub(r"\banonymized_incity_orders\b", "train", sql, flags=re.IGNORECASE)
+    # Old prompt files used anonymized_incity_orders or train for the order-level dataset.
+    # The active detailed-orders table is now incity.
+    sql = re.sub(r"\banonymized_incity_orders\b", "incity", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\btrain\b", "incity", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\s+", " ", sql)
     return sql
 
@@ -145,7 +148,7 @@ def get_template(template_id: str) -> dict[str, Any] | None:
 def result_cache_key(template_id: str, sql: str, params: dict[str, Any], max_rows: int) -> str:
     payload = f"{template_id}|{sql}|{params}|{max_rows}"
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    return f"drivee:template_result:v1:{digest}"
+    return f"drivee:template_result:v10:multidataset:{digest}"
 
 
 def _normalize_question(text: str) -> str:

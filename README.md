@@ -340,3 +340,293 @@ POST /api/reports/{report_id}/execute
 ```http
 DELETE /api/reports/{report_id}
 ```
+
+## Step 2: Explainability / interpretation
+
+`POST /api/analytics/ask` now returns an `interpretation` block. It explains how backend understood the request and the generated SQL:
+
+```json
+{
+  "interpretation": {
+    "metric": "Самые дорогие заказы по итоговой стоимости price_order_local",
+    "date_filter": "order_timestamp от 2026-01-01 включительно до 2027-01-01 не включительно",
+    "filters": [],
+    "group_by": [],
+    "sort": "price_order_local DESC NULLS LAST",
+    "limit": 100,
+    "used_columns": ["order_id", "price_order_local", "order_timestamp"],
+    "selected_expressions": ["order_id", "price_order_local"],
+    "row_logic": "Возвращает строки из train после фильтрации и сортировки.",
+    "result_shape": "table",
+    "explanation_ru": [
+      "Метрика/смысл запроса: Самые дорогие заказы по итоговой стоимости price_order_local.",
+      "Период: order_timestamp от 2026-01-01 включительно до 2027-01-01 не включительно.",
+      "Сортировка: price_order_local DESC NULLS LAST.",
+      "Ограничение результата: LIMIT 100.",
+      "Перед выполнением SQL прошёл guardrails и PostgreSQL EXPLAIN-проверку."
+    ]
+  }
+}
+```
+
+The same interpretation is also returned by:
+
+- `POST /api/templates/{template_id}/execute`
+- `POST /api/reports/{report_id}/execute`
+- `POST /api/analytics/sql/execute`
+
+Use this block on frontend as a "Система поняла запрос так" panel.
+
+## Step 3: Visualization config для фронта
+
+Backend теперь возвращает блок `visualization`. Он не рисует график сам, а подсказывает frontend-у, какой компонент лучше показать: `metric`, `table`, `bar` или `line`.
+
+Пример ответа:
+
+```json
+{
+  "visualization": {
+    "recommended": true,
+    "type": "bar",
+    "title": "Покажи топ-10 городов по числу отмен",
+    "x_axis": "city_id",
+    "y_axis": "canceled_orders",
+    "series": ["canceled_orders"],
+    "label_column": null,
+    "value_column": null,
+    "reason_ru": "Есть категориальная колонка и числовой показатель — лучше показать столбчатую диаграмму.",
+    "frontend_config": {
+      "component": "BarChart",
+      "x_key": "city_id",
+      "y_keys": ["canceled_orders"],
+      "data_key": "rows"
+    }
+  }
+}
+```
+
+Где появляется `visualization`:
+
+- `POST /api/analytics/ask`
+- `POST /api/analytics/sql/execute`
+- `POST /api/templates/{template_id}/execute`
+- `POST /api/reports/{report_id}/execute`
+
+Логика выбора:
+
+- 1 строка + числовой показатель → `metric`
+- дата/день/неделя/месяц + число → `line`
+- город/статус/час + число → `bar`
+- если непонятно, что рисовать → `table`
+
+Frontend может брать `result.rows` как данные, а ключи брать из `visualization.frontend_config`.
+
+## Step 4: уточняющие вопросы и confidence
+
+`POST /api/analytics/ask` теперь перед вызовом Ollama проверяет, не является ли вопрос слишком неоднозначным. Если вопрос нельзя безопасно интерпретировать, backend возвращает `needs_clarification=true` и список готовых вариантов для фронта.
+
+Пример неоднозначного вопроса:
+
+```json
+{
+  "question": "покажи лучшие города",
+  "max_rows": 100
+}
+```
+
+Пример ответа:
+
+```json
+{
+  "source": "clarification",
+  "needs_clarification": true,
+  "confidence": 0.25,
+  "confidence_reason": "запрос неоднозначный, backend не стал угадывать SQL и попросил уточнение",
+  "clarification": {
+    "message_ru": "Что считать лучшим городом?",
+    "reason": "ambiguous_city_ranking_metric",
+    "options": [
+      {"label": "По количеству заказов", "question": "Покажи города по количеству заказов", "template_params": {}},
+      {"label": "По обороту", "question": "Покажи города по сумме price_order_local для завершенных заказов", "template_params": {}},
+      {"label": "По среднему чеку", "question": "Покажи средний чек по городам", "template_params": {}}
+    ]
+  }
+}
+```
+
+Фронт может показать `clarification.options` как кнопки. При клике отправляй `option.question` обратно в `/api/analytics/ask`.
+
+Также в обычном ответе теперь есть:
+
+```json
+{
+  "confidence": 0.87,
+  "confidence_reason": "SQL прошёл guardrails и PostgreSQL EXPLAIN; вернулось строк: 10"
+}
+```
+
+`confidence` считается backend-ом, а не только моделью: учитываются шаблон, cache hit, EXPLAIN-проверка, guardrails, автопочинка SQL и пустой результат.
+
+## Step 5: Admin audit logs for guardrails
+
+Added technical audit trail for SQL validation and query execution.
+
+New admin-only endpoints:
+
+```text
+GET /api/admin/query-audit-logs
+GET /api/admin/query-audit-logs/{audit_id}
+GET /api/admin/query-audit-logs/stats
+```
+
+Only `is_superuser=true` users can access them. The default seeded user from `.env` is a superuser.
+
+Each audit log stores:
+
+- action: `ask`, `validate`, `execute`, `template_execute`, `report_save`, `report_execute`
+- source: `llm`, `template`, `template_cache`, `manual_sql`, `saved_report`, `clarification`
+- status: `ok`, `blocked`, `cache`, `clarification`, `error`
+- original SQL and normalized SQL
+- guardrail errors and warnings
+- blocked reason
+- row count, confidence, execution time
+- template/report metadata when available
+
+Useful demo checks:
+
+```sql
+DROP TABLE train;
+SELECT id FROM train;
+SELECT COUNT(DISTINCT order_id) FROM train WHERE status_order = 'delete';
+```
+
+The first two should be blocked and visible in `/api/admin/query-audit-logs?status=blocked`.
+The third should pass because `'delete'` is a safe status value inside quotes, not a SQL DELETE command.
+
+## Step 6: Heavy SQL protection / performance guardrails
+
+Added stronger protection against queries that can overload PostgreSQL.
+
+Now backend blocks or limits:
+
+- `SELECT *` — explicit columns only;
+- `CROSS JOIN` and comma joins;
+- multiple references to `train` / self-joins;
+- large `OFFSET`;
+- row-locking clauses like `FOR UPDATE`;
+- expensive helpers like `pg_sleep()` and `generate_series()`;
+- `ORDER BY random()`;
+- queries that exceed PostgreSQL `EXPLAIN` cost/row thresholds.
+
+DB-level protections are applied before validation and execution:
+
+```env
+SQL_STATEMENT_TIMEOUT_MS=5000
+SQL_READONLY_TRANSACTION=true
+SQL_MAX_LIMIT=500
+SQL_MAX_OFFSET=1000
+SQL_MAX_TRAIN_REFERENCES=1
+SQL_MAX_EXPLAIN_TOTAL_COST=2000000
+SQL_MAX_EXPLAIN_PLAN_ROWS=2000000
+SQL_BLOCK_SELECT_STAR=true
+SQL_BLOCK_CROSS_JOIN=true
+```
+
+Safe queries still work, but the backend automatically adds/reduces `LIMIT` and returns warnings in `guardrails.warnings`, for example:
+
+```json
+{
+  "warnings": [
+    "LIMIT 100 was added automatically.",
+    "EXPLAIN estimate: total_cost=12345.67, plan_rows=50000."
+  ]
+}
+```
+
+Test blocked examples:
+
+```sql
+SELECT * FROM train;
+SELECT COUNT(*) FROM train a CROSS JOIN train b;
+SELECT order_id FROM train ORDER BY random();
+SELECT order_id FROM train OFFSET 100000 LIMIT 10;
+```
+
+## Шаг 7: расписание сохраненных отчетов
+
+Теперь сохраненные отчеты можно запускать по расписанию без нового запроса к LLM.
+Расписание использует уже сохраненный SQL отчета, каждый запуск заново проходит guardrails/EXPLAIN и выполняется только как readonly SELECT.
+
+### Endpoints
+
+```text
+GET    /api/report-schedules
+POST   /api/report-schedules
+GET    /api/report-schedules/{schedule_id}
+PATCH  /api/report-schedules/{schedule_id}
+POST   /api/report-schedules/{schedule_id}/run-now
+DELETE /api/report-schedules/{schedule_id}
+POST   /api/report-schedules/run-due        # admin/manual trigger
+```
+
+### Пример создания расписания
+
+```json
+{
+  "report_id": 1,
+  "frequency": "weekly",
+  "timezone": "Asia/Yakutsk",
+  "day_of_week": 0,
+  "hour": 9,
+  "minute": 0,
+  "default_max_rows": 100,
+  "params": {},
+  "is_enabled": true
+}
+```
+
+`day_of_week`: понедельник = 0, воскресенье = 6.
+Для `frequency = "daily"` день недели не нужен.
+Для `frequency = "monthly"` используй `day_of_month` от 1 до 31.
+
+### Как это работает
+
+1. Пользователь сохраняет отчет через `POST /api/reports/save`.
+2. Фронт создает расписание через `POST /api/report-schedules`.
+3. Backend раз в `REPORT_SCHEDULER_INTERVAL_SECONDS` проверяет `report_schedules.next_run_at`.
+4. Если расписание наступило, backend выполняет сохраненный SQL.
+5. Результат сохраняется в `report_schedules.last_result_preview`, `saved_reports.last_result_preview`, `query_history` и `query_audit_logs`.
+
+### Настройки
+
+```env
+REPORT_SCHEDULER_ENABLED=true
+REPORT_SCHEDULER_INTERVAL_SECONDS=60
+REPORT_SCHEDULER_BATCH_SIZE=10
+DEFAULT_REPORT_SCHEDULE_TIMEZONE=UTC
+```
+
+Для Railway важно: автоматический запуск работает пока запущен backend-процесс. Если сервис спит/выключен, расписания не выполняются до следующего запуска backend.
+
+## Semantic layer / семантический слой
+
+В проект добавлен активный семантический слой:
+
+```text
+backend/src/semantic/semantic_layer.json
+```
+
+Он описывает бизнес-значения колонок, метрики, синонимы и SQL-правила. Backend использует его в трёх местах:
+
+1. Перед вызовом Ollama: в prompt передаются схема таблицы, `notes.md` и `semantic_layer.json`.
+2. До вызова Ollama: вопрос пользователя дополняется найденными подсказками, например `отмены -> status_order = 'cancel'`.
+3. После выполнения SQL: `interpretation.explanation_ru` добавляет смысл использованных колонок.
+
+Проверить активный слой можно через Swagger:
+
+```text
+GET /api/analytics/semantic-layer
+GET /api/analytics/schema
+```
+
+Важно: Ollama не получает весь `train.csv`. Данные лежат в PostgreSQL, а LLM получает только структуру таблицы, `notes.md` и semantic layer, чтобы сгенерировать SQL.

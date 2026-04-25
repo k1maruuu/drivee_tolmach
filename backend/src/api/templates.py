@@ -9,11 +9,15 @@ from src.db.session import get_db
 from src.models.user import User
 from src.schemas.analytics import SqlValidationResponse
 from src.schemas.templates import QueryTemplateRead, TemplateExecuteRequest, TemplateExecuteResponse
+from src.services.audit_service import create_query_audit_log
+from src.services.explainability import build_query_interpretation
 from src.services.history_service import create_query_history, now_ms
 from src.services.query_executor import execute_readonly_query
 from src.services.redis_cache import get_json, set_json
 from src.services.sql_guard import validate_sql_against_database
+from src.services.template_params import resolve_template_params
 from src.services.template_service import get_template, load_templates, result_cache_key
+from src.services.visualization import build_visualization_config
 
 router = APIRouter(prefix="/templates", tags=["query templates"])
 
@@ -60,7 +64,12 @@ def execute_query_template(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
 
     required_params = set(template.get("params", []))
-    provided_params = data.params or {}
+    provided_params = resolve_template_params(
+        db,
+        question=str(template.get("question", "")),
+        required_params=required_params,
+        provided_params=data.params or {},
+    )
     missing_params = sorted(required_params - set(provided_params))
     if missing_params:
         raise HTTPException(
@@ -77,19 +86,50 @@ def execute_query_template(
     cache_key = result_cache_key(template_id, sql, provided_params, max_rows)
 
     cached = get_json(cache_key)
-    if cached is not None:
+    if isinstance(cached, dict):
         cached["cache_hit"] = True
+        cached_sql = str(cached.get("sql", sql))
+        if not cached.get("interpretation") and cached.get("result"):
+            cached["interpretation"] = build_query_interpretation(
+                question=str(template["question"]),
+                sql=cached_sql,
+                source="template_cache",
+                result=cached.get("result"),
+            )
+        if not cached.get("visualization") and cached.get("result"):
+            cached["visualization"] = build_visualization_config(
+                question=str(template["question"]),
+                sql=cached_sql,
+                result=cached.get("result"),
+                interpretation=cached.get("interpretation"),
+            )
         create_query_history(
             db,
             current_user=current_user,
             question=str(template["question"]),
-            generated_sql=str(cached.get("sql", sql)),
+            generated_sql=cached_sql,
             source="template_cache",
             template_id=template_id,
             template_title=str(template["title"]),
             result=cached.get("result"),
             confidence=1.0,
             execution_time_ms=now_ms(started_at),
+        )
+        create_query_audit_log(
+            db,
+            current_user=current_user,
+            action="template_execute",
+            source="template_cache",
+            status="cache",
+            question=str(template["question"]),
+            sql=cached_sql,
+            normalized_sql=cached_sql,
+            template_id=template_id,
+            template_title=str(template["title"]),
+            confidence=1.0,
+            row_count=(cached.get("result") or {}).get("row_count"),
+            execution_time_ms=now_ms(started_at),
+            extra={"cache_hit": True},
         )
         return cached
 
@@ -108,12 +148,39 @@ def execute_query_template(
             confidence=1.0,
             execution_time_ms=now_ms(started_at),
         )
+        create_query_audit_log(
+            db,
+            current_user=current_user,
+            action="template_execute",
+            source="template",
+            status="blocked",
+            question=str(template["question"]),
+            sql=sql,
+            validation=validation,
+            template_id=template_id,
+            template_title=str(template["title"]),
+            blocked_reason="; ".join(validation.errors),
+            confidence=1.0,
+            execution_time_ms=now_ms(started_at),
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"errors": validation.errors, "sql": sql},
         )
 
     result = execute_readonly_query(db, validation.normalized_sql, params=provided_params)
+    interpretation = build_query_interpretation(
+        question=str(template["question"]),
+        sql=validation.normalized_sql,
+        source="template",
+        result=result,
+    )
+    visualization = build_visualization_config(
+        question=str(template["question"]),
+        sql=validation.normalized_sql,
+        result=result,
+        interpretation=interpretation,
+    )
 
     response = {
         "template_id": template_id,
@@ -123,6 +190,8 @@ def execute_query_template(
         "cache_hit": False,
         "result": result,
         "guardrails": _validation_response(validation),
+        "interpretation": interpretation,
+        "visualization": visualization,
     }
     set_json(cache_key, response, settings.template_result_cache_ttl_seconds)
     create_query_history(
@@ -135,6 +204,21 @@ def execute_query_template(
         template_title=str(template["title"]),
         result=result,
         confidence=1.0,
+        execution_time_ms=now_ms(started_at),
+    )
+    create_query_audit_log(
+        db,
+        current_user=current_user,
+        action="template_execute",
+        source="template",
+        status="ok",
+        question=str(template["question"]),
+        sql=sql,
+        validation=validation,
+        template_id=template_id,
+        template_title=str(template["title"]),
+        confidence=1.0,
+        row_count=result.get("row_count"),
         execution_time_ms=now_ms(started_at),
     )
     return response

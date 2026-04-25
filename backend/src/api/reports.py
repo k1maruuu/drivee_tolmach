@@ -17,9 +17,12 @@ from src.schemas.reports import (
     SaveReportRequest,
     SavedReportRead,
 )
+from src.services.audit_service import create_query_audit_log
+from src.services.explainability import build_query_interpretation
 from src.services.history_service import build_result_preview, create_query_history
 from src.services.query_executor import execute_readonly_query
 from src.services.sql_guard import validate_sql_against_database
+from src.services.visualization import build_visualization_config
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -119,6 +122,19 @@ def save_report(
 
     validation = validate_sql_against_database(db, sql, limit=data.default_max_rows, params=data.params)
     if not validation.is_valid or not validation.normalized_sql:
+        create_query_audit_log(
+            db,
+            current_user=current_user,
+            action="report_save",
+            source=source,
+            status="blocked",
+            question=question,
+            sql=sql,
+            validation=validation,
+            template_id=template_id,
+            template_title=template_title,
+            blocked_reason="; ".join(validation.errors),
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"message": "Report SQL did not pass validation", "errors": validation.errors, "sql": sql},
@@ -142,6 +158,20 @@ def save_report(
     db.add(report)
     db.commit()
     db.refresh(report)
+    create_query_audit_log(
+        db,
+        current_user=current_user,
+        action="report_save",
+        source=source,
+        status="ok",
+        question=question,
+        sql=sql,
+        validation=validation,
+        template_id=template_id,
+        template_title=template_title,
+        row_count=last_row_count,
+        extra={"report_id": report.id},
+    )
     return _report_to_schema(report)
 
 
@@ -201,9 +231,35 @@ def execute_saved_report(
             status="blocked",
             error_message="; ".join(validation.errors),
         )
+        create_query_audit_log(
+            db,
+            current_user=current_user,
+            action="report_execute",
+            source="saved_report",
+            status="blocked",
+            question=report.question,
+            sql=report.sql,
+            validation=validation,
+            template_id=report.template_id,
+            template_title=report.template_title,
+            blocked_reason="; ".join(validation.errors),
+            extra={"report_id": report.id},
+        )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"errors": validation.errors, "sql": report.sql})
 
     result = execute_readonly_query(db, validation.normalized_sql, params=params)
+    interpretation = build_query_interpretation(
+        question=report.question,
+        sql=validation.normalized_sql,
+        source="saved_report",
+        result=result,
+    )
+    visualization = build_visualization_config(
+        question=report.question,
+        sql=validation.normalized_sql,
+        result=result,
+        interpretation=interpretation,
+    )
     report.last_result_preview = build_result_preview(result)
     report.last_row_count = result.get("row_count")
     report.last_run_at = datetime.now(timezone.utc)
@@ -222,6 +278,21 @@ def execute_saved_report(
         result=result,
         confidence=1.0 if report.source == "template" else None,
     )
+    create_query_audit_log(
+        db,
+        current_user=current_user,
+        action="report_execute",
+        source="saved_report",
+        status="ok",
+        question=report.question,
+        sql=report.sql,
+        validation=validation,
+        template_id=report.template_id,
+        template_title=report.template_title,
+        confidence=1.0 if report.source == "template" else None,
+        row_count=result.get("row_count"),
+        extra={"report_id": report.id},
+    )
 
     return ReportExecuteResponse(
         report=_report_to_schema(report),
@@ -229,6 +300,8 @@ def execute_saved_report(
         params=params,
         result=result,
         guardrails=_validation_response(validation),
+        interpretation=interpretation,
+        visualization=visualization,
     )
 
 
