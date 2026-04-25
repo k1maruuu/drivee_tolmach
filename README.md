@@ -60,7 +60,6 @@
   * DROP / DELETE / UPDATE
 * проверяет через `EXPLAIN`
 * ограничивает тяжёлые запросы
-* автоматически добавляет LIMIT
 
 #### 4. Explainability
 
