@@ -204,6 +204,7 @@ docker compose up --build
   * Redis
   * Ollama
   * Backend
+  * Frontend
 
 ---
 
