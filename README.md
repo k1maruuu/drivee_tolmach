@@ -1,4 +1,4 @@
-# 🚀 Drivee NL2SQL Platform — Team Unicorn
+# 🚀 Drivee NL2SQL Platform — Unicorn
 
 ## 📌 Описание проекта
 
