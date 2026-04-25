@@ -41,6 +41,8 @@ class SavedReport(Base):
     params: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     default_max_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     last_result_preview: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    last_interpretation: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    last_visualization: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     last_row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)

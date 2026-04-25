@@ -1,7 +1,9 @@
+import io
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from src.api.dependencies import get_current_user
@@ -16,8 +18,10 @@ from src.schemas.reports import (
     ReportExecuteResponse,
     SaveReportRequest,
     SavedReportRead,
+    SavedReportUpdateRequest,
 )
 from src.services.audit_service import create_query_audit_log
+from src.services.excel_export import query_result_to_xlsx_bytes
 from src.services.explainability import build_query_interpretation
 from src.services.history_service import build_result_preview, create_query_history
 from src.services.query_executor import execute_readonly_query
@@ -68,6 +72,8 @@ def _report_to_schema(item: SavedReport) -> SavedReportRead:
         params=item.params or {},
         default_max_rows=item.default_max_rows,
         last_result_preview=item.last_result_preview,
+        last_interpretation=item.last_interpretation,
+        last_visualization=item.last_visualization,
         last_row_count=item.last_row_count,
         last_run_at=item.last_run_at,
         created_at=item.created_at,
@@ -119,6 +125,16 @@ def save_report(
     template_title = history.template_title if history else data.template_title
     last_preview = history.result_preview if history else None
     last_row_count = history.row_count if history else None
+    last_interp = None
+    last_viz = None
+    last_run_at = history.created_at if history and history.status == "ok" else None
+
+    if history is None and data.result is not None:
+        last_preview = build_result_preview(data.result)
+        last_row_count = data.result.get("row_count")
+        last_interp = jsonable_encoder(data.interpretation) if data.interpretation is not None else None
+        last_viz = jsonable_encoder(data.visualization) if data.visualization is not None else None
+        last_run_at = datetime.now(timezone.utc)
 
     validation = validate_sql_against_database(db, sql, limit=data.default_max_rows, params=data.params)
     if not validation.is_valid or not validation.normalized_sql:
@@ -152,8 +168,10 @@ def save_report(
         params=jsonable_encoder(data.params or {}),
         default_max_rows=data.default_max_rows,
         last_result_preview=last_preview,
+        last_interpretation=last_interp,
+        last_visualization=last_viz,
         last_row_count=last_row_count,
-        last_run_at=history.created_at if history and history.status == "ok" else None,
+        last_run_at=last_run_at,
     )
     db.add(report)
     db.commit()
@@ -203,6 +221,54 @@ def get_saved_report(
     if not report:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
     return _report_to_schema(report)
+
+
+@router.patch("/{report_id}", response_model=SavedReportRead)
+def patch_saved_report(
+    report_id: int,
+    data: SavedReportUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    report = db.query(SavedReport).filter(SavedReport.id == report_id, SavedReport.user_id == current_user.id).first()
+    if not report:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+    if data.title is not None:
+        report.title = data.title
+    if data.description is not None:
+        report.description = data.description
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    return _report_to_schema(report)
+
+
+@router.get("/{report_id}/export.xlsx")
+def export_report_xlsx(
+    report_id: int,
+    max_rows: int = Query(default=1000, ge=1, le=5000),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    report = db.query(SavedReport).filter(SavedReport.id == report_id, SavedReport.user_id == current_user.id).first()
+    if not report:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+    cap = min(max_rows, settings.sql_max_limit)
+    params = report.params or {}
+    validation = validate_sql_against_database(db, report.sql, limit=cap, params=params)
+    if not validation.is_valid or not validation.normalized_sql:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"errors": validation.errors, "sql": report.sql},
+        )
+    result = execute_readonly_query(db, validation.normalized_sql, params=params)
+    body = query_result_to_xlsx_bytes(result)
+    name = f"report_{report_id}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(body),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
 
 
 @router.post("/{report_id}/execute", response_model=ReportExecuteResponse)
@@ -261,6 +327,8 @@ def execute_saved_report(
         interpretation=interpretation,
     )
     report.last_result_preview = build_result_preview(result)
+    report.last_interpretation = jsonable_encoder(interpretation)
+    report.last_visualization = jsonable_encoder(visualization)
     report.last_row_count = result.get("row_count")
     report.last_run_at = datetime.now(timezone.utc)
     db.add(report)

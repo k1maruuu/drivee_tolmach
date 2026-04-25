@@ -33,6 +33,10 @@ class SaveReportRequest(BaseModel):
     template_title: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     default_max_rows: int = Field(default=100, ge=1, le=1000)
+    # Snapshot when saving without history_id (e.g. fresh Ask response).
+    result: dict[str, Any] | None = Field(default=None, description="QueryResult JSON to store as last_result_preview")
+    interpretation: dict[str, Any] | None = None
+    visualization: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_source_data(self):
@@ -53,10 +57,17 @@ class SavedReportRead(BaseModel):
     params: dict[str, Any]
     default_max_rows: int
     last_result_preview: dict[str, Any] | None = None
+    last_interpretation: dict[str, Any] | None = None
+    last_visualization: dict[str, Any] | None = None
     last_row_count: int | None = None
     last_run_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class SavedReportUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
 
 
 class ReportExecuteRequest(BaseModel):

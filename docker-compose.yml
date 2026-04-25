@@ -31,6 +31,36 @@ services:
       timeout: 3s
       retries: 10
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: drivee-ollama
+    restart: unless-stopped
+    runtime: nvidia
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: drivee-ollama-pull
+    restart: "no"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "echo Pulling model $${OLLAMA_MODEL:-qwen3:4b}...
+      && ollama pull $${OLLAMA_MODEL:-qwen3:4b}
+      && echo Model $${OLLAMA_MODEL:-qwen3:4b} is ready"
+
   backend:
     container_name: drivee-backend
     build:
@@ -48,20 +78,29 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  # Потом можно добавить frontend так:
-  # frontend:
-  #   build:
-  #     context: ./frontend
-  #   ports:
-  #     - "3000:3000"
-  #   depends_on:
-  #     - backend
-  #   environment:
-  #     NEXT_PUBLIC_API_URL: http://localhost:8000
+  frontend:
+    container_name: drivee-frontend
+    build:
+      context: ./frontend
+      args:
+        # Server-side rewrites (SSR / edge cases inside the Next container).
+        NEXT_INTERNAL_API_DEST: http://backend:8000
+        # Browser calls API on the host port directly — avoids Next's short /api proxy timeout on long /analytics/ask (Ollama + SQL).
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:
   redis_data:
+  ollama_data:

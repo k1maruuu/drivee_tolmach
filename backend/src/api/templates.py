@@ -1,6 +1,8 @@
+import io
 from time import perf_counter
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from src.api.dependencies import get_current_user
@@ -10,6 +12,7 @@ from src.models.user import User
 from src.schemas.analytics import SqlValidationResponse
 from src.schemas.templates import QueryTemplateRead, TemplateExecuteRequest, TemplateExecuteResponse
 from src.services.audit_service import create_query_audit_log
+from src.services.excel_export import query_result_to_xlsx_bytes
 from src.services.explainability import build_query_interpretation
 from src.services.history_service import create_query_history, now_ms
 from src.services.query_executor import execute_readonly_query
@@ -222,3 +225,25 @@ def execute_query_template(
         execution_time_ms=now_ms(started_at),
     )
     return response
+
+
+@router.post("/{template_id}/export.xlsx")
+def export_template_xlsx(
+    template_id: str,
+    data: TemplateExecuteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Runs the same path as /execute, returns Excel instead of JSON (extra history/audit row)."""
+    payload = execute_query_template(template_id, data, db, current_user)
+    result = payload.get("result") if isinstance(payload, dict) else None
+    if not result:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="No result to export")
+    body = query_result_to_xlsx_bytes(result)
+    safe_id = "".join(ch for ch in template_id if ch.isalnum() or ch in ("-", "_"))[:80] or "template"
+    name = f"template_{safe_id}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(body),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )

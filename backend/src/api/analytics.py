@@ -17,6 +17,7 @@ from src.services.explainability import build_query_interpretation
 from src.services.history_service import create_query_history, now_ms
 from src.services.ollama_client import generate_sql
 from src.services.query_executor import execute_readonly_query
+from src.services.question_limits import apply_question_limit_to_sql, effective_ask_limit
 from src.services.redis_cache import get_json, set_json
 from src.services.sql_guard import validate_sql_against_database
 from src.services.semantic_layer import load_semantic_layer, semantic_columns_for_schema, semantic_metrics_for_schema, semantic_synonyms_for_schema
@@ -46,7 +47,7 @@ def _validation_feedback(validation) -> str:
         parts.append("Errors: " + "; ".join(validation.errors))
     if validation.warnings:
         parts.append("Warnings: " + "; ".join(validation.warnings))
-    parts.append("Important: table train has no column id. Use order_id and tender_id.")
+    parts.append("Important: use incity (and related tables); there is no generic id column — use order_id and tender_id.")
     return "\n".join(parts)
 
 
@@ -88,7 +89,7 @@ def _execute_matched_template(
             },
         )
 
-    sql = str(template["sql"])
+    sql = apply_question_limit_to_sql(str(template["sql"]), question)
     cache_key = result_cache_key(str(template["id"]), sql, params, max_rows)
     cached = get_json(cache_key)
     if isinstance(cached, dict):
@@ -109,7 +110,7 @@ def _execute_matched_template(
                 interpretation=interpretation,
             )
             confidence = _template_confidence(template, cache_hit=True)
-            create_query_history(
+            hist = create_query_history(
                 db,
                 current_user=current_user,
                 question=question,
@@ -152,6 +153,7 @@ def _execute_matched_template(
                 template_title=str(template.get("title")),
                 template_match_score=(template.get("match") or {}).get("score"),
                 cache_hit=True,
+                history_id=hist.id,
             )
 
     validation = validate_sql_against_database(db, sql, limit=max_rows, params=params)
@@ -241,7 +243,7 @@ def _execute_matched_template(
     )
     db.add(log)
     db.commit()
-    create_query_history(
+    hist = create_query_history(
         db,
         current_user=current_user,
         question=question,
@@ -285,18 +287,19 @@ def _execute_matched_template(
         template_title=str(template.get("title")),
         template_match_score=(template.get("match") or {}).get("score"),
         cache_hit=False,
+        history_id=hist.id,
     )
 
 
 @router.get("/schema")
 def schema(current_user: User = Depends(get_current_user)):
     return {
-        "table": "train",
+        "table": "incity",
         "has_id_column": False,
         "columns": TRAIN_COLUMNS,
         "column_descriptions": TRAIN_COLUMN_DESCRIPTIONS,
         "notes_md": read_train_notes(),
-        "dataset_loading": "train.csv is imported into PostgreSQL table train on startup when IMPORT_TRAIN_ON_STARTUP=true. Ollama receives only schema + notes.md, not the whole CSV.",
+        "dataset_loading": "Datasets (incity, pass_detail, driver_detail) load from CSV under ./data when IMPORT_DATASETS_ON_STARTUP=true. Ollama receives schema + notes, not full CSV files.",
         "performance_guardrails": {
             "sql_default_limit": settings.sql_default_limit,
             "sql_max_limit": settings.sql_max_limit,
@@ -440,7 +443,10 @@ async def ask(
     current_user: User = Depends(get_current_user),
 ):
     started_at = perf_counter()
-    max_rows = min(data.max_rows or settings.sql_default_limit, settings.sql_max_limit)
+    # /analytics/ask no longer accepts max_rows.
+    # If the user writes "топ 66", "покажи 50", etc., we extract that N from the question.
+    # Otherwise we use SQL_DEFAULT_LIMIT as a safe backend cap.
+    max_rows = min(effective_ask_limit(data.question), settings.sql_max_limit)
 
     # 1) First try reusable templates from goodprompts.txt.
     # If a template is matched, we execute its SQL directly and do NOT call Ollama.
@@ -624,7 +630,7 @@ async def ask(
     )
     db.add(log)
     db.commit()
-    create_query_history(
+    hist = create_query_history(
         db,
         current_user=current_user,
         question=data.question,
@@ -661,4 +667,5 @@ async def ask(
         visualization=visualization,
         source="llm",
         cache_hit=False,
+        history_id=hist.id,
     )

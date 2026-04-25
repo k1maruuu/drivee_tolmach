@@ -46,7 +46,7 @@ def _month_bounds(year: int, month: int) -> tuple[date, date]:
 
 def _dataset_date_bounds(db: Session) -> tuple[date, date] | None:
     row = db.execute(
-        text("SELECT MIN(order_timestamp)::date AS min_day, MAX(order_timestamp)::date AS max_day FROM train")
+        text("SELECT MIN(order_timestamp)::date AS min_day, MAX(order_timestamp)::date AS max_day FROM incity")
     ).mappings().first()
     if not row or row["min_day"] is None or row["max_day"] is None:
         return None
@@ -125,7 +125,7 @@ def _default_city_id(db: Session) -> int | None:
         text(
             """
             SELECT city_id
-            FROM train
+            FROM incity
             WHERE city_id IS NOT NULL
             GROUP BY city_id
             ORDER BY COUNT(DISTINCT order_id) DESC
