@@ -157,7 +157,7 @@ query_audit_logs
 
 ---
 
-## 📊 Что уже реализовано
+## 📊 Что реализовано
 
 ```text
 ✅ NL → SQL
@@ -176,6 +176,8 @@ query_audit_logs
 ---
 
 ## 🚀 Как запустить
+
+* В папку data/ надо загрузить csv файлы с датасетами и notes.md 
 
 ```bash
 docker compose up --build
