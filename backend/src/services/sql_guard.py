@@ -45,7 +45,7 @@ DANGEROUS_FUNCTIONS = {
     "pg_ls_dir",
 }
 
-ALLOWED_TABLES = {"train"}
+ALLOWED_TABLES = {"incity", "pass_detail", "driver_detail"}
 
 
 @dataclass
@@ -261,8 +261,34 @@ def _apply_readonly_settings(db: Session) -> None:
         db.execute(text("SET LOCAL default_transaction_read_only = on"))
 
 
+def _is_aggregate_or_grouped_query(sql: str, plan: dict[str, Any]) -> bool:
+    """Return True for queries that scan many rows but return aggregated output.
+
+    COUNT(DISTINCT order_id) over a large dataset can require a full scan, but it
+    returns 1 row and is exactly the kind of safe KPI query expected in this MVP.
+    The previous guard used the maximum Plan Rows from all child nodes and blocked
+    such queries by mistake.
+    """
+    normalized = _strip_sql_literals_and_comments(sql).upper()
+    if re.search(r"\b(COUNT|SUM|AVG|MIN|MAX)\s*\(", normalized):
+        return True
+    if re.search(r"\bGROUP\s+BY\b", normalized):
+        return True
+
+    node_type = str(plan.get("Node Type") or "").lower()
+    if "aggregate" in node_type:
+        return True
+    return False
+
+
 def _validate_explain_plan(db: Session, sql: str, params: dict[str, Any] | None = None) -> list[str]:
-    """Run PostgreSQL planner checks without fetching data."""
+    """Run PostgreSQL planner checks without fetching data.
+
+    Important distinction:
+    - root_plan_rows = estimated rows returned to the user; this must stay small.
+    - max_scan_rows = rows PostgreSQL may scan internally; large values are OK for
+      safe aggregate queries like COUNT/SUM/AVG because they return compact results.
+    """
     warnings: list[str] = []
     raw_plan = db.execute(text("EXPLAIN (FORMAT JSON) " + sql), params or {}).scalar()
     plan = _plan_from_explain_row(raw_plan)
@@ -271,20 +297,40 @@ def _validate_explain_plan(db: Session, sql: str, params: dict[str, Any] | None 
         return warnings
 
     total_cost = _max_plan_metric(plan, "Total Cost")
-    plan_rows = _max_plan_metric(plan, "Plan Rows")
+    root_plan_rows = float(plan.get("Plan Rows") or 0)
+    max_scan_rows = _max_plan_metric(plan, "Plan Rows")
+    is_aggregate = _is_aggregate_or_grouped_query(sql, plan)
 
     if total_cost > settings.sql_max_explain_total_cost:
         raise ValueError(
             f"Query is too expensive by EXPLAIN: total_cost={total_cost:.2f}, "
             f"limit={settings.sql_max_explain_total_cost}."
         )
-    if plan_rows > settings.sql_max_explain_plan_rows:
+
+    # Block queries that can return too many rows to the API/client. Do not block
+    # safe aggregate queries just because the database must scan a large table.
+    if root_plan_rows > settings.sql_max_explain_plan_rows:
         raise ValueError(
-            f"Query may scan/produce too many rows by EXPLAIN: plan_rows={int(plan_rows)}, "
+            f"Query may produce too many result rows by EXPLAIN: root_plan_rows={int(root_plan_rows)}, "
             f"limit={settings.sql_max_explain_plan_rows}."
         )
 
-    warnings.append(f"EXPLAIN estimate: total_cost={total_cost:.2f}, plan_rows={int(plan_rows)}.")
+    if max_scan_rows > settings.sql_max_explain_plan_rows and not is_aggregate:
+        raise ValueError(
+            f"Query may scan too many rows by EXPLAIN: scan_rows={int(max_scan_rows)}, "
+            f"limit={settings.sql_max_explain_plan_rows}. Add filters, grouping, or a smaller LIMIT."
+        )
+
+    if max_scan_rows > settings.sql_max_explain_plan_rows and is_aggregate:
+        warnings.append(
+            f"EXPLAIN warning: query scans about {int(max_scan_rows)} rows, "
+            "but it returns an aggregated result, so it is allowed."
+        )
+
+    warnings.append(
+        f"EXPLAIN estimate: total_cost={total_cost:.2f}, "
+        f"root_plan_rows={int(root_plan_rows)}, max_scan_rows={int(max_scan_rows)}."
+    )
     return warnings
 
 
@@ -348,25 +394,31 @@ def validate_sql(sql: str, limit: int | None = None) -> ValidationResult:
     elif re.search(r"\bOFFSET\s+(?!\d+\b)", scan_sql):
         errors.append("Parameterized or non-numeric OFFSET is forbidden.")
 
-    # Detect implicit comma joins with train, e.g. FROM train a, train b.
-    if re.search(r"\bFROM\s+train(?:\s+[a-zA-Z_][a-zA-Z0-9_]*)?\s*,", scan_sql, flags=re.IGNORECASE):
-        errors.append("Comma joins are forbidden. Use simple aggregation from train only.")
+    # Detect implicit comma joins, e.g. FROM incity a, incity b.
+    if re.search(r"\bFROM\s+(?:incity|pass_detail|driver_detail)(?:\s+[a-zA-Z_][a-zA-Z0-9_]*)?\s*,", scan_sql, flags=re.IGNORECASE):
+        errors.append("Comma joins are forbidden. Use explicit JOIN with clear ON conditions.")
 
     table_refs = _extract_table_references(original_sql)
     tables = set(table_refs)
     cte_names = _extract_cte_names(original_sql)
     unknown_tables = tables - ALLOWED_TABLES - cte_names
     if unknown_tables:
-        errors.append(f"Only table train is allowed. Unknown tables: {', '.join(sorted(unknown_tables))}")
+        allowed = ", ".join(sorted(ALLOWED_TABLES))
+        errors.append(f"Only these dataset tables are allowed: {allowed}. Unknown tables: {', '.join(sorted(unknown_tables))}")
 
-    if "train" not in tables:
-        errors.append("Query must read from table train")
+    if not (tables & ALLOWED_TABLES):
+        errors.append("Query must read from at least one dataset table: incity, pass_detail, driver_detail")
 
-    if table_refs.count("train") > settings.sql_max_train_references:
+    max_refs = getattr(settings, "sql_max_table_references", settings.sql_max_train_references)
+    real_table_refs = [table for table in table_refs if table in ALLOWED_TABLES]
+    if len(real_table_refs) > max_refs:
         errors.append(
-            f"Query references train {table_refs.count('train')} times; maximum allowed is "
-            f"{settings.sql_max_train_references}. Self-joins are too heavy for MVP mode."
+            f"Query references dataset tables {len(real_table_refs)} times; maximum allowed is {max_refs}. "
+            "Use simple joins/aggregations for MVP mode."
         )
+    for table in ALLOWED_TABLES:
+        if real_table_refs.count(table) > 1:
+            errors.append(f"Self-join or repeated reference to {table} is forbidden in MVP mode.")
 
     normalized = None
     if not errors:

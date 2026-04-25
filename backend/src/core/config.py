@@ -24,21 +24,31 @@ class Settings(BaseSettings):
     first_superuser_email: str = "admin@example.com"
     first_superuser_password: str = "admin123"
 
-    ollama_base_url: str = "http://localhost:11434"
+    ollama_base_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3:4b"
     ollama_timeout_seconds: int = 120
 
+    # New datasets. Put these files into ./data before docker compose up.
+    incity_csv_path: str = "/data/incity.csv"
+    pass_detail_csv_path: str = "/data/pass_detail.csv"
+    driver_detail_csv_path: str = "/data/driver_detail.csv"
+    dataset_notes_path: str = "/data/notes.md"
+
+    # Backward-compatible old names. They are no longer the primary source.
     train_csv_path: str = "/data/train.csv"
     train_notes_path: str = "/data/notes.md"
+
     good_prompts_path: str = "/data/goodprompts.txt"
     semantic_layer_path: str = "/app/src/semantic/semantic_layer.json"
+    import_datasets_on_startup: bool = True
     import_train_on_startup: bool = True
 
     sql_default_limit: int = 100
     sql_max_limit: int = 500
     sql_statement_timeout_ms: int = 5_000
     sql_max_offset: int = 1_000
-    sql_max_train_references: int = 1
+    sql_max_table_references: int = 3
+    sql_max_train_references: int = 3  # kept for compatibility with older code/env
     sql_max_explain_total_cost: float = 2_000_000
     sql_max_explain_plan_rows: int = 2_000_000
     sql_block_select_star: bool = True
@@ -50,7 +60,7 @@ class Settings(BaseSettings):
     template_match_threshold: float = 0.88
 
     report_scheduler_enabled: bool = True
-    report_scheduler_interval_seconds: int = 60
+    report_scheduler_interval_seconds: int = 300
     report_scheduler_batch_size: int = 10
     default_report_schedule_timezone: str = "UTC"
 
@@ -58,7 +68,17 @@ class Settings(BaseSettings):
     def cors_origins(self) -> List[str]:
         return [origin.strip() for origin in self.backend_cors_origins.split(",") if origin.strip()]
 
-    @field_validator("sql_default_limit", "sql_max_limit", "sql_statement_timeout_ms", "sql_max_offset", "sql_max_train_references", "sql_max_explain_plan_rows", "report_scheduler_interval_seconds", "report_scheduler_batch_size")
+    @field_validator(
+        "sql_default_limit",
+        "sql_max_limit",
+        "sql_statement_timeout_ms",
+        "sql_max_offset",
+        "sql_max_table_references",
+        "sql_max_train_references",
+        "sql_max_explain_plan_rows",
+        "report_scheduler_interval_seconds",
+        "report_scheduler_batch_size",
+    )
     @classmethod
     def positive_limit(cls, value: int) -> int:
         if value <= 0:

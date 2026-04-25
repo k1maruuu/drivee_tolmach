@@ -17,6 +17,7 @@ from src.services.explainability import build_query_interpretation
 from src.services.history_service import create_query_history, now_ms
 from src.services.ollama_client import generate_sql
 from src.services.query_executor import execute_readonly_query
+from src.services.question_limits import apply_question_limit_to_sql, effective_ask_limit
 from src.services.redis_cache import get_json, set_json
 from src.services.sql_guard import validate_sql_against_database
 from src.services.semantic_layer import load_semantic_layer, semantic_columns_for_schema, semantic_metrics_for_schema, semantic_synonyms_for_schema
@@ -88,7 +89,7 @@ def _execute_matched_template(
             },
         )
 
-    sql = str(template["sql"])
+    sql = apply_question_limit_to_sql(str(template["sql"]), question)
     cache_key = result_cache_key(str(template["id"]), sql, params, max_rows)
     cached = get_json(cache_key)
     if isinstance(cached, dict):
@@ -440,7 +441,10 @@ async def ask(
     current_user: User = Depends(get_current_user),
 ):
     started_at = perf_counter()
-    max_rows = min(data.max_rows or settings.sql_default_limit, settings.sql_max_limit)
+    # /analytics/ask no longer accepts max_rows.
+    # If the user writes "топ 66", "покажи 50", etc., we extract that N from the question.
+    # Otherwise we use SQL_DEFAULT_LIMIT as a safe backend cap.
+    max_rows = min(effective_ask_limit(data.question), settings.sql_max_limit)
 
     # 1) First try reusable templates from goodprompts.txt.
     # If a template is matched, we execute its SQL directly and do NOT call Ollama.

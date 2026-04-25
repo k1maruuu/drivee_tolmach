@@ -5,7 +5,6 @@ from pydantic import BaseModel, Field
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=2, max_length=1000)
-    max_rows: int | None = Field(default=None, ge=1, le=1000)
     template_params: dict[str, Any] = Field(
         default_factory=dict,
         description="Optional params for matched templates, for example date_from/date_to/city_id.",
