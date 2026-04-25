@@ -48,8 +48,14 @@ async def generate_sql(question: str, max_rows: int, validation_feedback: str | 
     }
 
     url = f"{settings.ollama_base_url.rstrip('/')}/api/generate"
+    timeout = httpx.Timeout(
+        connect=30.0,
+        read=float(settings.ollama_timeout_seconds),
+        write=30.0,
+        pool=30.0,
+    )
     try:
-        async with httpx.AsyncClient(timeout=settings.ollama_timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()

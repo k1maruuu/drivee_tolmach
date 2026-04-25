@@ -86,3 +86,4 @@ class AskResponse(BaseModel):
     template_title: str | None = None
     template_match_score: float | None = None
     cache_hit: bool = False
+    history_id: int | None = None

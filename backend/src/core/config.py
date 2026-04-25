@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     ollama_base_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3:4b"
-    ollama_timeout_seconds: int = 120
+    ollama_timeout_seconds: int = 300
 
     # New datasets. Put these files into ./data before docker compose up.
     incity_csv_path: str = "/data/incity.csv"
@@ -45,7 +45,8 @@ class Settings(BaseSettings):
 
     sql_default_limit: int = 100
     sql_max_limit: int = 500
-    sql_statement_timeout_ms: int = 5_000
+    # Per-session SET LOCAL statement_timeout for user SQL (ms). Large incity aggregates need more than a few seconds.
+    sql_statement_timeout_ms: int = 180_000
     sql_max_offset: int = 1_000
     sql_max_table_references: int = 3
     sql_max_train_references: int = 3  # kept for compatibility with older code/env

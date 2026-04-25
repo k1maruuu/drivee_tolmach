@@ -82,17 +82,25 @@ services:
         condition: service_healthy
       ollama-pull:
         condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+=======
 
-  # Потом можно добавить frontend так:
-  # frontend:
-  #   build:
-  #     context: ./frontend
-  #   ports:
-  #     - "3000:3000"
-  #   depends_on:
-  #     - backend
-  #   environment:
-  #     NEXT_PUBLIC_API_URL: http://localhost:8000
+
+  frontend:
+    container_name: drivee-frontend
+    build:
+      context: ./frontend
+      args:
+        # Server-side rewrites (SSR / edge cases inside the Next container).
+        NEXT_INTERNAL_API_DEST: http://backend:8000
+        # Browser calls API on the host port directly — avoids Next's short /api proxy timeout on long /analytics/ask (Ollama + SQL).
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:

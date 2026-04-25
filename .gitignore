@@ -1,4 +1,5 @@
 .env
+_upstream_tmp/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -8,6 +9,14 @@ venv/
 .vscode/
 *.log
 .DS_Store
+
+.data/incity.csv
+.data/pass_detail.csv
+.data/driver_detail.csv
+data/pass_detail.csv
+data/incity.csv
+data/driver_detail.csv
+=======
 
 
 *.csv

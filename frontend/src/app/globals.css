@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+:root {
+  /* Tolmach theme tokens */
+  --bg: #0e1012;
+  --panel: #161a1c;
+  --card: #1e2326;
+  --card2: #252b2e;
+  --border: rgba(255, 255, 255, 0.07);
+  --border2: rgba(255, 255, 255, 0.12);
+
+  --text: #f0f2f1;
+  --muted: #8b9490;
+  --muted2: #556059;
+
+  --accent: #6cff72;
+  --accent2: #3db842;
+  --accentBg: rgba(108, 255, 114, 0.13);
+
+  --danger: #ff6b6b;
+  --dangerBg: rgba(255, 77, 77, 0.08);
+  --warn: #f5a623;
+  --warnBg: rgba(245, 166, 35, 0.08);
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-panel: var(--panel);
+  --color-card: var(--card);
+  --color-card2: var(--card2);
+  --color-border: var(--border);
+  --color-border2: var(--border2);
+
+  --color-muted: var(--muted);
+  --color-muted2: var(--muted2);
+
+  --color-accent: var(--accent);
+  --color-accent2: var(--accent2);
+  --color-accentbg: var(--accentBg);
+
+  --color-danger: var(--danger);
+  --color-dangerbg: var(--dangerBg);
+  --color-warn: var(--warn);
+  --color-warnbg: var(--warnBg);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans), system-ui, -apple-system, Segoe UI, Roboto, Arial,
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tolmach-fade-up {
+  animation: fadeUp 220ms ease-out both;
+}
