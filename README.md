@@ -125,6 +125,18 @@ Swagger:
 http://localhost:8000/docs
 ```
 
+Frontend:
+
+```text
+http://localhost:3000
+```
+
+Backend:
+
+```text
+http://localhost:8000
+```
+
 ---
 
 ## 🎯 Примеры запросов
